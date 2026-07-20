@@ -210,6 +210,16 @@ try {
   $allManifest = @($mainMan) + @($secEntries | Select-Object rel,sha256,bytes,source,category,target)
   Log "secrets-split" "PASS" "main=$($mainMan.Count) secret=$($secEntries.Count)"
   Scan-Secrets $mainMan
+
+  # 2b. Staff-continuity coverage assertion (F14): staff.json / personas / .Clairvoyance memory must be in the archive.
+  # Loud (ok=false + FAIL stage) but non-fatal: never skip a night's backup over a coverage miss.
+  if($cfg.protectedPaths){
+    $covRel=@($allManifest | ForEach-Object { (($_.source + '/' + $_.rel) -replace '\\','/') })
+    $missing=@(); foreach($g in $cfg.protectedPaths){ if(-not(@($covRel) -like $g)){ $missing+=$g } }   # -like: case-insensitive wildcard, no regex escaping
+    $staffSrcs=@($allManifest | Where-Object { (($_.source + '/' + $_.rel) -replace '\\','/') -like '*/.clairvoyance/staff/*' } | Select-Object -ExpandProperty source -Unique)
+    if($missing.Count){ $result.ok=$false; Log "protected-paths" "FAIL" ("MISSING from archive: "+($missing -join '; ')+" -- Staff identity/memory may not be recoverable; check config excludes and workspacesRoot") }
+    else { Log "protected-paths" "PASS" ("all protected paths present; per-workspace staff memory from: "+(@($staffSrcs) -join ', ')) }
+  }
   Assert-Window "compress"
 
   # 3. meta (F8: full inventory -> secrets archive only)
@@ -297,4 +307,3 @@ finally {
   if($cfg.lastRunFile){ $json | Set-Content -LiteralPath $cfg.lastRunFile -Encoding UTF8 -EA SilentlyContinue }   # F11b: Archivist reads this to report
   $json
 }
-
