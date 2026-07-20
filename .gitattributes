@@ -1,0 +1,10 @@
+# Normalize line endings. Text files are stored with LF in the repo.
+* text=auto eol=lf
+
+# PowerShell scripts: keep LF in the repo; they run fine under PowerShell 5.1+.
+*.ps1 text eol=lf
+*.psm1 text eol=lf
+
+# Markdown / JSON as text
+*.md text eol=lf
+*.json text eol=lf

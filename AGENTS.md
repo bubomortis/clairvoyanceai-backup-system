@@ -29,4 +29,4 @@ A permanent local directory on a fixed disk that both Clairvoyance and a SYSTEM 
 
 ## Risk acknowledgements to surface
 
-The main archive is unencrypted by default; the secrets archive is AES-256 with a DPAPI-sealed, machine-bound passphrase (losing it means the encrypted archive is unrecoverable). Single destination = no offsite copy unless the user adds one. `restore.ps1 -Mode InPlace` is whole-archive and will overwrite live locations — use `-Mode Extract` for single-file recovery. See `docs/Forum-Description.md` for the complete list.
+The main archive is unencrypted by default; the secrets archive is AES-256 with a DPAPI-sealed, machine-bound passphrase (losing it means the encrypted archive is unrecoverable). Single destination = no offsite copy unless the user adds one. `restore.ps1 -Mode InPlace` is whole-archive and will overwrite live locations — use `-Mode Extract` for single-file recovery. See the **Risks & limitations** section of `README.md` for the complete list.
