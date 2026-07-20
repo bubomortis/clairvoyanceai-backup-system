@@ -82,6 +82,7 @@ Open [docs/Build-Runbook.md](docs/Build-Runbook.md) and follow it top to bottom.
 - **Trustless authoring:** you never copy-paste opaque binaries. The runbook has your AI write each script to disk from the auditable fenced source, substitute placeholders, and verify it parses before anything runs.
 - **Secrets stay local:** the main archive is unencrypted for easy recovery; anything sensitive is routed to a separate AES-256 (`-mhe=on`) archive whose passphrase never leaves the machine (sealed via DPAPI).
 - **Windows-specific:** requires 7-Zip, robocopy, PowerShell 5.1+, and a reachable destination (network share or fixed disk).
+- **Staff-continuity check:** a Staff member isn't one file — their definition (`profiles/staff.json`), custom persona, and `.Clairvoyance/staff/` memory live in several places. The engine asserts (via `protectedPaths` in `config.example.json`) that those are actually in each archive and fails loudly if a future exclude ever silently drops them.
 
 ## Risks & limitations
 

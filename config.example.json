@@ -29,6 +29,14 @@
   "secretsCredentialName": "BACKUP_SECRETS_PASSPHRASE",
   "_comment_secretsCredentialName": "Fallback: name of an environment variable holding the AES passphrase if the DPAPI passphraseFile is absent. The DPAPI-sealed passphraseFile is the primary mechanism (Step 7).",
 
+  "protectedPaths": [
+    "home-appdata/profiles/*/staff.json",
+    "home-appdata/profiles/*/agent-sessions.json",
+    "home-appdata/neurons/personas/*",
+    "home-appdata/.Clairvoyance/staff/*"
+  ],
+  "_comment_protectedPaths": "Staff-continuity assertion. Each glob (PowerShell -like, case-insensitive; '*' spans any characters including '/') is matched against '<source>/<rel>' of the combined manifest; each must have >=1 file in the archive, else the run logs a FAIL stage and sets ok=false (loud, but does NOT abort — you still get that night's backup). This guards the Staff-member files (definition profiles/staff.json, history agent-sessions.json, custom personas, and the Home workspace's .Clairvoyance/staff memory) against being silently dropped by a future exclude. Per-workspace staff memory is reported (not required) since not every workspace has it; add 'workspace-<Name>/.Clairvoyance/staff/*' to hard-require a specific workspace. Omit this key entirely to disable the check.",
+
   "retention": { "daily": 7, "weekly": 12, "monthly": 12, "annual": -1, "artifacts": -1 },
   "_comment_retention": "How many of each tier to keep. -1 = keep all. Weekly slot = lastDayOfWeek; monthly = month-end; annual = year-end.",
   "secretsRetention": { "monthly": 3, "annual": 2 },
