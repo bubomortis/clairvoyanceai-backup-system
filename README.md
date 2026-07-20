@@ -2,7 +2,7 @@
 
 A daily, versioned, GFS-tiered backup system for [Clairvoyance](https://clairvoyance.ai) workspaces on Windows. It mirrors app data + workspaces to a network share, produces SHA-256 manifests, splits secrets into a separate AES-256 encrypted archive, applies Grandfather-Father-Son retention (Daily/Weekly/Monthly/Annual + a weekly Artifacts tier), deep-verifies archives from the share, and runs unattended as a SYSTEM scheduled task.
 
-This repository contains the **scrubbed, shareable** build materials — no instance identifiers, hostnames, paths, or secrets. It is provided **as-is**; read the risks section in the Forum Description before adopting.
+This repository contains the **scrubbed, shareable** build materials — no instance identifiers, hostnames, paths, or secrets. It is provided **as-is**; read [**Risks & limitations**](#risks--limitations) below before adopting.
 
 ## What's here
 
@@ -12,7 +12,6 @@ This repository contains the **scrubbed, shareable** build materials — no inst
 | [docs/Companion-Scripts.md](docs/Companion-Scripts.md) | Annotated, byte-accurate source of `backup.ps1`, `restore.ps1`, and `evaluate-workspaces.ps1`, using `<TOOL_DIR>` / `<WORKSPACES_ROOT>` placeholders. **Canonical source of truth** for the scripts. |
 | [scripts/](scripts/) | The same three scripts extracted verbatim as standalone `.ps1` files, for syntax highlighting and diffs. Convenience/audit copies — kept in sync with the Companion Scripts note. |
 | [config.example.json](config.example.json) | Annotated example `config.json` showing the exact structure, nesting, and types, with placeholder paths. Copy, substitute, and drop the `_comment*` keys. |
-| [docs/Forum-Description.md](docs/Forum-Description.md) | Adopter-facing overview: what it does, what it doesn't, dependencies, and the full list of known risks/limitations. |
 
 > **Note on `scripts/`:** these files still carry the `<TOOL_DIR>` / `<WORKSPACES_ROOT>` placeholders as parameter defaults. Substitute them for your own paths (or always invoke with an explicit `-ConfigPath`) before running. The runbook's trustless flow — where your own AI authors the scripts locally — remains the recommended install path; `scripts/` is provided for convenience and auditing, not blind download-and-run.
 
@@ -21,7 +20,7 @@ This repository contains the **scrubbed, shareable** build materials — no inst
 > [!WARNING]
 > This is an **attended, interview-driven build**, not a one-click installer. You must be present at the keyboard to answer the setup interview and to approve the machine-level steps (sealing an encryption passphrase, creating a SYSTEM scheduled task, optional folder lockdown). It **cannot** run unattended. A copy-paste prompt is a convenience, **not consent** — your agent must still stop and ask you to approve each risky step.
 
-Requirements: Windows 10/11 · PowerShell 5.1+ · 7-Zip · robocopy (built in) · a reachable backup destination (a network share or a second fixed disk). See [docs/Forum-Description.md](docs/Forum-Description.md) for the full dependency and risk list before you start.
+Requirements: Windows 10/11 · PowerShell 5.1+ · 7-Zip · robocopy (built in) · a reachable backup destination (a network share or a second fixed disk). Read [**Risks & limitations**](#risks--limitations) below before you start.
 
 Choose **one** method.
 
@@ -84,4 +83,23 @@ Open [docs/Build-Runbook.md](docs/Build-Runbook.md) and follow it top to bottom.
 - **Secrets stay local:** the main archive is unencrypted for easy recovery; anything sensitive is routed to a separate AES-256 (`-mhe=on`) archive whose passphrase never leaves the machine (sealed via DPAPI).
 - **Windows-specific:** requires 7-Zip, robocopy, PowerShell 5.1+, and a reachable destination (network share or fixed disk).
 
-Provided without warranty. See the Forum Description for the complete risk list (unencrypted-main default, machine-bound DPAPI, single-destination/no-offsite, restore caveats, and more).
+## Risks & limitations
+
+No backup is risk-free. **Provided as-is, without warranty.** Adopt this only if you accept the following. If your data is critical, pair it with an offsite/immutable copy.
+
+1. **Lose the passphrase → permanent loss** of the encrypted secrets archive (and any workspaces you elect to encrypt). There is **no key escrow / no recovery** by design. Store the passphrase in multiple safe places.
+2. **The main archive is UNENCRYPTED by default.** Your notes and workspace content sit on the destination protected **only by access control**, not cryptography — and may be readable in transit if your share isn't encrypted. Mitigate with tight destination ACLs, SMB encryption, encrypted-at-rest disk, and/or electing sensitive workspaces into the encrypted archive.
+3. **The passphrase is machine-bound** (LocalMachine DPAPI). The sealed key file only decrypts on that same PC. A bare-metal rebuild requires re-sealing from your password manager — lose *both* the machine and that copy and the secrets are gone.
+4. **It runs elevated.** The nightly job executes as SYSTEM with backup privilege. The design minimizes this (one audited script, locked-down folder), but you are running privileged automation nightly — keep the tool folder admin-only (the runbook does this).
+5. **Brief residual passphrase exposure:** 7-Zip can't take the password via stdin for *test/extract* (only for compression), so those steps pass it inline for ~1 second — visible to local process enumeration during that window. Local-only, minor, but not zero.
+6. **Single destination = no offsite/immutability by itself.** It backs up to the ONE place you point it. A ransomware event could hit your live data *and* a local/LAN backup. Add offsite replication and/or immutable/versioned storage separately if you need it.
+7. **Silent-corruption window:** the hash cache trusts file modified-times between the monthly full re-hash passes, so a corruption that preserves mtime could go undetected for up to ~a month.
+8. **Missed/powered-off nights:** it's a scheduled daily point-in-time backup. If the PC is off at the scheduled time, that day is missed (tier slots self-heal on the next run, but that specific day's snapshot is lost).
+9. **Large/media-heavy workspaces need tuning.** Setup scans your workspaces and asks how to handle big folders; skip that and huge regenerable directories can blow the time window and storage. Review the scan.
+10. **AI-in-the-loop monitoring is optional.** An in-app "Archivist" Staff member can report success/failure and raise alarms, but the backup itself does not depend on it — the SYSTEM task runs and writes `last-run.json` regardless. If you use the monitor, confirm its alarm channel actually reaches you and don't treat "no alarm" as proof of success; either way, check the log periodically.
+11. **Untested restores aren't backups.** Periodically run the restore *verify* and a test *in-place* recovery. This system makes that easy, but you have to actually do it.
+12. **Optional SMB-signing hardening can break guest network shares.** Setup offers an *optional* step to require SMB signing (`RequireSecuritySignature`, default **off**). Enabling it breaks any SMB share using **guest/anonymous logins** (common on NAS boxes — Unraid, public/guest shares) after the next reboot, failing with a **misleading "error 67 / network name cannot be found."** Only enable it if every SMB share you use is authenticated. Recovery is one command: `Set-SmbClientConfiguration -RequireSecuritySignature $false -Force`.
+
+## What it does not do
+
+Not a cloud/offsite service on its own · not continuous/real-time (daily point-in-time) · not ransomware-immutable by itself · not cross-platform · doesn't image the OS or reinstall apps (it backs up Clairvoyance data + your chosen dependencies; the app is reinstalled per the recovery plan).
