@@ -9,8 +9,11 @@ This repository contains the **scrubbed, shareable** build materials — no inst
 | Document | Purpose |
 | -------- | ------- |
 | [docs/Build-Runbook.md](docs/Build-Runbook.md) | Step-by-step, interview-driven build guide. Your own AI (or you) authors the scripts locally from the Companion Scripts — nothing is downloaded and run blind. |
-| [docs/Companion-Scripts.md](docs/Companion-Scripts.md) | Byte-accurate source of `backup.ps1`, `restore.ps1`, and `evaluate-workspaces.ps1`, using `<TOOL_DIR>` / `<WORKSPACES_ROOT>` placeholders. |
+| [docs/Companion-Scripts.md](docs/Companion-Scripts.md) | Annotated, byte-accurate source of `backup.ps1`, `restore.ps1`, and `evaluate-workspaces.ps1`, using `<TOOL_DIR>` / `<WORKSPACES_ROOT>` placeholders. **Canonical source of truth** for the scripts. |
+| [scripts/](scripts/) | The same three scripts extracted verbatim as standalone `.ps1` files, for syntax highlighting and diffs. Convenience/audit copies — kept in sync with the Companion Scripts note. |
 | [docs/Forum-Description.md](docs/Forum-Description.md) | Adopter-facing overview: what it does, what it doesn't, dependencies, and the full list of known risks/limitations. |
+
+> **Note on `scripts/`:** these files still carry the `<TOOL_DIR>` / `<WORKSPACES_ROOT>` placeholders as parameter defaults. Substitute them for your own paths (or always invoke with an explicit `-ConfigPath`) before running. The runbook's trustless flow — where your own AI authors the scripts locally — remains the recommended install path; `scripts/` is provided for convenience and auditing, not blind download-and-run.
 
 ## Design notes
 
