@@ -1,0 +1,87 @@
+{
+  "_comment": "EXAMPLE config for the Clairvoyance Versioning Backup System. Copy to config.json, replace every <PLACEHOLDER> and example path with your interview values, and delete the _comment* keys (the engine ignores unknown keys; these are annotations only). All paths are Windows paths with escaped backslashes.",
+
+  "instanceName": "<INSTANCE_NAME>",
+  "_comment_instanceName": "Destination subfolder name for this machine. Default to the PC hostname; use a nickname if multiple Clairvoyance installs share one PC.",
+
+  "backupRoot": "\\\\SERVER\\Backup\\Clairvoyance",
+  "_comment_backupRoot": "Destination root. A UNC share (\\\\server\\share\\...) or a local/second-disk path (e.g. D:\\Backups\\Clairvoyance). Per-instance tiers are created under <backupRoot>\\<instanceName>\\.",
+
+  "sevenZip": "C:\\Program Files\\7-Zip\\7z.exe",
+  "copyMethod": "robocopy",
+  "_comment_copyMethod": "robocopy (default, needs elevation for /B open-file copy) | vss | appclose | tar.",
+
+  "stagingDir": "<TOOL_DIR>\\stage",
+  "tempDir": "<TOOL_DIR>\\work",
+  "passphraseFile": "<TOOL_DIR>\\.secretkey",
+  "pauseFlag": "<TOOL_DIR>\\BACKUP_IN_PROGRESS",
+  "lastRunFile": "<TOOL_DIR>\\last-run.json",
+  "_comment_toolDir": "<TOOL_DIR> is the permanent local fixed-disk tool directory chosen in Step 5a. stagingDir holds the persistent robocopy mirror (needs room for ~one uncompressed daily set); it may point at a roomier disk instead of <TOOL_DIR> if needed.",
+
+  "lastDayOfWeek": "Sunday",
+  "abortAfterLocalTime": "03:45",
+  "_comment_abortAfterLocalTime": "Guard: a real (non -RunDate) run aborts if it starts after this local time, to avoid overrunning a reboot/maintenance window. Set just before that window.",
+
+  "deepVerifySample": 6,
+  "_comment_deepVerifySample": "How many random files to extract FROM the destination archive and hash-check after upload.",
+  "secretScanMaxFileKB": 1024,
+
+  "secretsCredentialName": "BACKUP_SECRETS_PASSPHRASE",
+  "_comment_secretsCredentialName": "Fallback: name of an environment variable holding the AES passphrase if the DPAPI passphraseFile is absent. The DPAPI-sealed passphraseFile is the primary mechanism (Step 7).",
+
+  "retention": { "daily": 7, "weekly": 12, "monthly": 12, "annual": -1, "artifacts": -1 },
+  "_comment_retention": "How many of each tier to keep. -1 = keep all. Weekly slot = lastDayOfWeek; monthly = month-end; annual = year-end.",
+  "secretsRetention": { "monthly": 3, "annual": 2 },
+  "_comment_secretsRetention": "Shorter prune schedule applied to the encrypted *_secrets archives.",
+
+  "sources": [
+    {
+      "name": "home-appdata",
+      "path": "C:\\Users\\<YOU>\\AppData\\Roaming\\clairvoyance",
+      "category": "app",
+      "excludeDirs": ["Cache", "Code Cache", "GPUCache", "Session Storage", "Network", "blob_storage", "DawnGraphiteCache", "DawnWebGPUCache", "Crashpad"],
+      "excludeFiles": ["*-wal", "*-shm", "crash.log", "*.lock"]
+    },
+    {
+      "name": "dependencies",
+      "path": "<DEPENDENCIES_DIR>",
+      "category": "dependency",
+      "excludeDirs": [],
+      "excludeFiles": []
+    }
+  ],
+  "_comment_sources": "Non-workspace source roots. The home-appdata excludeDirs above are the standard Electron caches (safe to keep as-is). Add/remove dependency entries as needed.",
+
+  "workspacesRoot": "<WORKSPACES_ROOT>",
+  "workspaceDefaults": { "excludeDirs": [], "excludeFiles": [], "artifactDirs": ["runs"], "encrypt": false },
+  "_comment_workspaceDefaults": "Applied to every auto-discovered workspace unless overridden in workspaceTuning. artifactDirs are routed to the weekly incremental Artifacts tier instead of the daily set.",
+
+  "workspaceTuning": {
+    "ExampleMediaPipeline": { "excludeDirs": ["venv", "models", "node_modules", "downloads"], "excludeFiles": ["*.exe"], "artifactDirs": ["runs", "transcripts"], "encrypt": false },
+    "ExampleSensitiveWorkspace": { "excludeDirs": [], "excludeFiles": [], "artifactDirs": ["runs"], "encrypt": true }
+  },
+  "_comment_workspaceTuning": "Per-workspace overrides, keyed by workspace folder name. Exclude regenerable dirs (venv/.venv/site-packages, model blobs, node_modules, downloads) from the daily set. encrypt=true (F6a) routes that workspace's daily files into the AES-256 _secrets.7z instead of the plaintext _main.7z. WARNING: encrypting a workspace means losing the passphrase makes it unrecoverable — default false; only encrypt genuinely sensitive workspaces.",
+
+  "secretsSet": [
+    "auth-storage.json",
+    "encryption-context.json",
+    "credentials/**",
+    "integrations/**",
+    "rclone.conf"
+  ],
+  "_comment_secretsSet": "Files/dirs always routed to the encrypted archive and excluded from the plaintext main archive. Match-Secret (F7) is depth-agnostic: a bare filename matches at any depth; dir/** matches that directory anywhere. Confirm/add during interview Step 9.",
+
+  "secretScanPatterns": [
+    "sk-ant-[A-Za-z0-9_-]{20}",
+    "ghp_[A-Za-z0-9]{20}",
+    "AKIA[A-Z0-9]{16}",
+    "-----BEGIN [A-Z ]*PRIVATE KEY-----",
+    "\"(client_secret|refresh_token|access_token|api[_-]?key)\"\\s*:\\s*\"[^\"]{12}"
+  ],
+  "_comment_secretScanPatterns": "Regexes the pre-compress leak scan (F7) warns on if matched inside the plaintext set. Extend for your own token shapes.",
+
+  "orchestrators": [
+    { "name": "<ORCHESTRATOR_NAME>", "staffId": "<STAFF_ID>", "pauseCompliance": "unverified" }
+  ],
+  "_comment_orchestrators": "Staff that run automated pipelines and must pause during backup (Step 8 / §9a). pauseCompliance: unverified | compliant | noncompliant. Empty array is fine if none."
+}
