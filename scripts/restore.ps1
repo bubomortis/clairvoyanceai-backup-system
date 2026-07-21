@@ -5,8 +5,9 @@
     -Mode InPlace  : restore each file to its MANIFEST target, VALIDATED against allowed roots (requires -Force)
   F2: InPlace targets are validated against the real config's source roots (NOT the manifest);
       UNC/device/traversal paths are rejected. Provide -ConfigPath or -AllowRoot for InPlace.
-  F3: passphrase comes from env RESTORE_SECRETS_PASS (or -Pass fallback), never prompted onto history.
-      (7z x/t cannot read the password from stdin, so it is passed inline for the ~1s of extraction.)
+  F3/B4: with no -Pass/env, 7-Zip prompts for the passphrase interactively (bare -p) so it never
+      touches the process command line or shell history. env RESTORE_SECRETS_PASS / -Pass remain for
+      scripted validation and are passed inline (explicit opt-in; 7z x/t cannot read a pw from stdin).
 #>
 [CmdletBinding()]
 param(
@@ -44,11 +45,15 @@ New-Item -ItemType Directory -Force -Path $work | Out-Null
 try {
   if($Mode -eq "Extract"){
     if(-not $Dest){ throw "-Dest required for Extract mode" }
-    $pArgs = @("x",$Archive,"-o$Dest","-y","-bso0","-bsp0"); if($Pass){ $pArgs += "-p$Pass" }
+    # B4: prefer an interactive 7-Zip prompt (bare -p) so the passphrase never lands
+    # on the process command line. Inline -p only when a passphrase was supplied
+    # non-interactively (scripted validation), which is an explicit opt-in.
+    $pArgs = @("x",$Archive,"-o$Dest","-y","-bso0","-bsp0"); $pArgs += if($Pass){ "-p$Pass" } else { "-p" }
     & $SevenZip @pArgs | Out-Null; if($LASTEXITCODE -ne 0){ throw "extract failed (bad passphrase or corrupt archive)" }
     Say "extract-to" $Dest; return
   }
-  $pArgs = @("x",$Archive,"-o$work","-y","-bso0","-bsp0"); if($Pass){ $pArgs += "-p$Pass" }
+  # B4: bare -p => interactive prompt (nothing on the cmdline); inline only if -Pass/env given.
+  $pArgs = @("x",$Archive,"-o$work","-y","-bso0","-bsp0"); $pArgs += if($Pass){ "-p$Pass" } else { "-p" }
   & $SevenZip @pArgs | Out-Null; if($LASTEXITCODE -ne 0){ throw "extract failed (bad passphrase or corrupt archive)" }
   Say "extract" "ok -> $work"
 
