@@ -122,16 +122,41 @@ function Get-SecretFilesLive(){ $out=@()
   }
   return ,@($out)
 }
-# F7: pre-upload scan gate for NOVEL secrets leaking into the plaintext main set (warn-first)
-function Scan-Secrets($mainMan){ if(-not $cfg.secretScanPatterns){ return }
-  $maxB=([int]$cfg.secretScanMaxFileKB)*1024; $hits=@()
-  foreach($e in $mainMan){ if($e.bytes -gt $maxB){ continue }
-    $full=Join-Path (Join-Path $mirror $e.source) $e.rel; if(-not(Test-Path -LiteralPath $full)){ continue }
-    $txt=$null; try { $txt=Get-Content -Raw -LiteralPath $full -ErrorAction Stop } catch { continue }
-    if($txt -match "\0"){ continue }   # skip binary
-    foreach($pat in $cfg.secretScanPatterns){ if($txt -match $pat){ $hits+="$($e.source)\$($e.rel)"; break } }
+# F7/B2: pre-upload gate for NOVEL secrets leaking into the plaintext main set.
+# B2: instead of only warning, PROACTIVELY SCRUB the secret from the archived copy
+# (the mirror file -- NEVER the live source) and let the backup proceed. A night's
+# backup is never skipped over a detected secret. Only when an in-line scrub is
+# impossible (write fails) is that single file EXCLUDED from the archive so the
+# secret cannot ship. Files that cannot be scanned (oversized/binary) are surfaced,
+# never silently treated as clean. Returns the possibly-trimmed main manifest.
+function Scan-Secrets($mainMan){ if(-not $cfg.secretScanPatterns){ return ,@($mainMan) }
+  $maxB=([int]$cfg.secretScanMaxFileKB)*1024
+  $scrubbed=@(); $dropped=@(); $skipBig=0; $skipBin=0; $out=@()
+  foreach($e in $mainMan){
+    if($e.bytes -gt $maxB){ $skipBig++; $out+=$e; continue }
+    $full=Join-Path (Join-Path $mirror $e.source) $e.rel
+    if(-not(Test-Path -LiteralPath $full)){ $out+=$e; continue }
+    $txt=$null; try { $txt=Get-Content -Raw -LiteralPath $full -ErrorAction Stop } catch { $out+=$e; continue }
+    if($null -eq $txt){ $out+=$e; continue }
+    if($txt -match "\0"){ $skipBin++; $out+=$e; continue }   # binary: cannot text-scrub
+    $found=$false; $new=$txt
+    foreach($pat in $cfg.secretScanPatterns){ if($new -match $pat){ $found=$true; $new=[regex]::Replace($new,$pat,'***REDACTED-BY-BACKUP-SCRUB***') } }
+    if(-not $found){ $out+=$e; continue }
+    try {
+      Set-Content -LiteralPath $full -Value $new -Encoding UTF8 -NoNewline -ErrorAction Stop
+      $e.bytes=(Get-Item -LiteralPath $full).Length
+      $e.sha256=(Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash   # keep manifest == archived bytes (deep-verify stays consistent)
+      $scrubbed+="$($e.source)\$($e.rel)"; $out+=$e
+    } catch {
+      try { Remove-Item -LiteralPath $full -Force -ErrorAction Stop } catch {}   # cannot scrub -> exclude so it can't leak (file NOT added to $out)
+      $dropped+="$($e.source)\$($e.rel)"
+    }
   }
-  if($hits.Count){ Log "secret-scan" "WARN" "possible secret(s) in plaintext main: $((@($hits)|Select-Object -First 5) -join '; ')$(if($hits.Count -gt 5){" (+$($hits.Count-5) more)"})" } else { Log "secret-scan" "PASS" "no novel secrets detected in main set" }
+  if($scrubbed.Count){ Log "secret-scrub" "WARN" ("scrubbed secret(s) from plaintext main -- archived copy only, live source untouched: "+((@($scrubbed)|Select-Object -First 5) -join '; ')+$(if($scrubbed.Count -gt 5){" (+$($scrubbed.Count-5) more)"}else{""})) }
+  if($dropped.Count){ $result.ok=$false; Log "secret-scrub" "FAIL" ("could not scrub; EXCLUDED from archive to prevent leak (file NOT backed up this run): "+(@($dropped) -join '; ')) }
+  if($skipBig -or $skipBin){ Log "secret-scan" "WARN" ("not scanned (so NOT scrubbed): $skipBig oversized (>$($cfg.secretScanMaxFileKB)KB), $skipBin binary") }
+  if(-not $scrubbed.Count -and -not $dropped.Count){ Log "secret-scan" "PASS" ("no novel secrets in main set"+$(if($skipBig -or $skipBin){" ($skipBig oversized/$skipBin binary not scanned)"}else{""})) }
+  return ,@($out)
 }
 
 function Upload-Verify($srcFile,$destDir){
@@ -207,9 +232,9 @@ try {
 
   # 2. gather secrets from LIVE sources (F4); F7 scan gate on main
   $secEntries = if(-not $SkipSecrets){ @(Get-SecretFilesLive) } else { @() }
-  $allManifest = @($mainMan) + @($secEntries | Select-Object rel,sha256,bytes,source,category,target)
   Log "secrets-split" "PASS" "main=$($mainMan.Count) secret=$($secEntries.Count)"
-  Scan-Secrets $mainMan
+  $mainMan = @(Scan-Secrets $mainMan)   # B2: may scrub (hash updated in place) or drop unscrubbable files
+  $allManifest = @($mainMan) + @($secEntries | Select-Object rel,sha256,bytes,source,category,target)   # rebuild AFTER scrub so manifests match archived bytes
 
   # 2b. Staff-continuity coverage assertion (F14): staff.json / personas / .Clairvoyance memory must be in the archive.
   # Loud (ok=false + FAIL stage) but non-fatal: never skip a night's backup over a coverage miss.
@@ -247,8 +272,13 @@ try {
 
   # 5. integrity test
   if((SevenZip t -bso0 -bsp0 $mainArc) -ne 0){ throw "7z test main FAILED" }
-  # NOTE (F3 residual): 7z 't' cannot read the password from stdin (only 'a' can), so the test needs inline -p for ~1s.
-  # Compress above is stdin-safe; env is cleared; log is redacted. This brief test exposure is the only residual.
+  # NOTE (F3/B4 residual, deliberate): NO 7-Zip read mode (t/x/e/l) accepts the password from stdin
+  # or a redirected file -- only 'a' (compress) does (verified empirically 2026-07-21). This self-test
+  # runs unattended as SYSTEM with no console, so an interactive prompt is impossible too. Inline -p is
+  # therefore the only way to verify the encrypted archive here; keeping the test (vs. dropping it) was
+  # chosen over eliminating the ~1s exposure, which is readable only by SYSTEM/admin on a box that
+  # already runs this task as SYSTEM. Compress above is stdin-safe; env is cleared; log is redacted.
+  # (restore.ps1 has no console constraint, so it prompts interactively -- no cmdline exposure there.)
   if($hasSecrets){ if((SevenZip t ("-p"+$pass) -bso0 -bsp0 $secArc) -ne 0){ throw "7z test secrets FAILED" } }
   Log "compress-test" "PASS" ("verified " + (($arcs|ForEach-Object{Split-Path $_ -Leaf}) -join ', '))
   Assert-Window "upload"

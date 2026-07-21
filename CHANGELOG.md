@@ -7,7 +7,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
-_Nothing yet._
+### Security
+- **Secret scan now proactively scrubs instead of only warning (B2).** When `Scan-Secrets` finds a
+  novel secret in the plaintext main set, `backup.ps1` now redacts it in the **archived copy** (the
+  staging mirror — never the live source) and lets the backup proceed; the manifest hash/size for that
+  file are updated in place so deep-verify stays consistent. A backup is never skipped over a detected
+  secret. If an in-line scrub is impossible (write fails), that single file is **excluded** from the
+  archive (logged `FAIL`, `ok=false`) so the secret cannot ship, rather than aborting the run. Files
+  that cannot be scanned (oversized or binary) are now surfaced with counts instead of being silently
+  treated as clean.
+- **Restore no longer puts the passphrase on the command line (B4).** `restore.ps1` now lets 7-Zip
+  prompt for the passphrase interactively (bare `-p`) during attended recovery, so it never appears in
+  the process command line or shell history; `-Pass`/`RESTORE_SECRETS_PASS` remain for scripted
+  validation as an explicit opt-in. (The unattended secrets self-test in `backup.ps1` keeps inline
+  `-p` by design: no 7-Zip read mode accepts a stdin/file password and a SYSTEM task has no console,
+  so this is the only way to verify the encrypted archive; the ~1s exposure is SYSTEM/admin-readable
+  only, on a box that already runs the task as SYSTEM.)
 
 ## [0.1.0] - 2026-07-20
 
