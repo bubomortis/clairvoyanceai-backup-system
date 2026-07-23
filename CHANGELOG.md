@@ -7,6 +7,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+- **Install idempotency / preflight probe (`scripts/backup-preflight.ps1`).** A new **read-only** script that detects an existing install by probing **live** state — the engine scripts parse, `config.json` is valid, the DPAPI passphrase file actually unseals *on this machine*, and the "Clairvoyance Nightly Backup" SYSTEM task exists — and prints a parseable `VERDICT` (`NOT_INSTALLED` / `PARTIAL` / `COMPLETE` / `DUPLICATE`; exit codes 0–4; optional `-Json` and `-CheckUpdate`). Modeled on the Persona-Sync (`clvsync`) `status`-as-idempotency-gate pattern, so "install when the system is already in place" is handled by a deterministic probe instead of prose. Wired into `AGENTS.md` rule #4 and a new Build-Runbook **Step 1a** that branches on the verdict (COMPLETE → stop; PARTIAL → resume at the reported first-unmet invariant; DUPLICATE → stop and ask; NOT_INSTALLED → full install).
+- **Destructive-step guards.** Step 7 now **hard-refuses re-sealing** an existing passphrase (re-sealing a different key permanently orphans every existing AES `_secrets.7z`); Step 9 checks for an existing SYSTEM task before registering (prevents duplicate nightly races); config/state writes are specified as merge-preserving + atomic (temp + rename) so a re-install cannot clobber `config.json` or `backup_state.json` (the GFS tier cursors).
+- **`.backup-install.json` install manifest** — written atomically at go-live (Step 12) as an advisory version stamp that `backup-preflight.ps1` reads and cross-checks against live probes (a stale manifest surfaces as drift, never a false COMPLETE).
+- **Separate `§Update` and `§Rotate` runbook paths.** Update refreshes only repo-sourced scripts and never re-seals or re-registers; Rotate is the sole sanctioned way to re-key the passphrase, preserving the old archives + key through their retention window.
+
+### Changed
+- **Re-synced `docs/Companion-Scripts.md` to the shipping scripts.** The companion note (the nominal "canonical, byte-identical" source) had drifted a version behind `scripts/*.ps1` — it predated both the B2 secret-scrub and B4 restore-passphrase changes already listed below. Its fenced blocks are now byte-identical to `scripts/*.ps1` again (verified), and it now includes all four scripts, adding `backup-preflight.ps1`.
+
+### Fixed
+- **Manifest nesting bug in `backup.ps1` (manifest-nest-fix).** `$mainMan = @(Scan-Secrets $mainMan)` re-wrapped a comma-guarded array in `@()`, nesting it into a single-element array. That collapsed `$mainMan.Count` to 1, which (a) made the Staff-continuity assertion (F14) see none of the real paths and log a **false** `protected-paths FAIL` with `ok=false` even though the files were in the archive, and (b) serialized `MANIFEST.json` as `{"value":[...],"Count":N}` instead of a bare array. Fixed by assigning the comma-guarded return directly (no `@()` wrap); the identical latent pattern at the `Get-SecretFilesLive` caller was normalized too.
+- **`restore.ps1` tolerates legacy nested manifests.** Every archive produced with the bug above carries a `{"value":[...],"Count":N}` `MANIFEST.json`, so manifest-driven `-Mode Verify` / `-Mode InPlace` restore would have iterated a single null-fielded entry instead of the real files. `restore.ps1` now unwraps that shape before use (backward-compatible — bare-array manifests are untouched), keeping those archives restorable.
+
 ### Security
 - **Secret scan now proactively scrubs instead of only warning (B2).** When `Scan-Secrets` finds a
   novel secret in the plaintext main set, `backup.ps1` now redacts it in the **archived copy** (the
