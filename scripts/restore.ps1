@@ -60,6 +60,9 @@ try {
   $manPath = Join-Path $work "MANIFEST.json"; if(-not (Test-Path $manPath)){ $manPath = Join-Path $work "MANIFEST.secrets.json" }
   if(-not (Test-Path $manPath)){ throw "no MANIFEST in archive" }
   $man = Get-Content -Raw $manPath | ConvertFrom-Json
+  # Tolerate LEGACY nested manifests: archives produced before the manifest-nest-fix (2026-07-23)
+  # serialized as {"value":[...],"Count":N} instead of a bare array. Unwrap so those remain restorable.
+  if(($man -is [pscustomobject]) -and ($man.PSObject.Properties.Name -contains 'value') -and ($man.PSObject.Properties.Name -contains 'Count')){ $man = $man.value }
   $man = @($man)
   $ok=0; $bad=0; $missing=0; $restored=0; $rejected=0
   foreach($e in $man){

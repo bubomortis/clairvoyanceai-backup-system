@@ -10,7 +10,7 @@ This repository contains the **scrubbed, shareable** build materials — no inst
 | -------- | ------- |
 | [docs/Build-Runbook.md](docs/Build-Runbook.md) | Step-by-step, interview-driven build guide. Your own AI (or you) authors the scripts locally from the Companion Scripts — nothing is downloaded and run blind. |
 | [docs/Companion-Scripts.md](docs/Companion-Scripts.md) | Annotated, byte-accurate source of `backup.ps1`, `restore.ps1`, and `evaluate-workspaces.ps1`, using `<TOOL_DIR>` / `<WORKSPACES_ROOT>` placeholders. **Canonical source of truth** for the scripts. |
-| [scripts/](scripts/) | The same three scripts extracted verbatim as standalone `.ps1` files, for syntax highlighting and diffs. Convenience/audit copies — kept in sync with the Companion Scripts note. |
+| [scripts/](scripts/) | The same four scripts extracted verbatim as standalone `.ps1` files (`backup.ps1`, `restore.ps1`, `evaluate-workspaces.ps1`, `backup-preflight.ps1`), for syntax highlighting and diffs. Convenience/audit copies — kept in sync with the Companion Scripts note. |
 | [config.example.json](config.example.json) | Annotated example `config.json` showing the exact structure, nesting, and types, with placeholder paths. Copy, substitute, and drop the `_comment*` keys. |
 
 > **Note on `scripts/`:** these files still carry the `<TOOL_DIR>` / `<WORKSPACES_ROOT>` placeholders as parameter defaults. Substitute them for your own paths (or always invoke with an explicit `-ConfigPath`) before running. The runbook's trustless flow — where your own AI authors the scripts locally — remains the recommended install path; `scripts/` is provided for convenience and auditing, not blind download-and-run.
@@ -36,12 +36,14 @@ Treat docs/Build-Runbook.md in that repository as the AUTHORITATIVE, step-by-ste
 procedure. Read it in full and follow it exactly. Also read AGENTS.md at the repo
 root before doing anything. Observe these rules:
 
-1. IDEMPOTENCY FIRST. Before changing anything, check whether the backup system is
-   already installed and valid on this machine: an existing tool directory holding
-   backup.ps1 / restore.ps1 / evaluate-workspaces.ps1 + config.json, a sealed
-   passphrase file, and the "Clairvoyance Nightly Backup" SYSTEM scheduled task. If
-   it verifies, DO NOT reinstall, re-seal, or re-register anything — report the
-   existing installation and stop.
+1. IDEMPOTENCY FIRST. Before changing anything, run the read-only probe
+   backup-preflight.ps1 (author it first, the same trustless way as the other
+   scripts) and branch on its VERDICT. It checks LIVE state — the scripts parse,
+   config.json is valid, the sealed passphrase file actually DPAPI-unseals on this
+   machine, and the "Clairvoyance Nightly Backup" SYSTEM task exists. COMPLETE ->
+   report the existing install and STOP (do NOT reinstall, re-seal, or re-register);
+   PARTIAL -> resume only at the first unmet invariant; DUPLICATE -> stop and ask me;
+   NOT_INSTALLED -> proceed.
 2. Confirm this is Windows, PowerShell is 5.1 or later, 7-Zip and robocopy are
    present, and I have a reachable backup destination (network share or fixed disk).
    Report any missing prerequisite and stop.
@@ -50,8 +52,8 @@ root before doing anything. Observe these rules:
 4. Ask me to choose a permanent LOCAL tool directory on a fixed disk that both
    Clairvoyance and a SYSTEM scheduled task can reach and execute (no UNC path, no
    OneDrive-synced folder, no temp directory).
-5. AUTHOR THE SCRIPTS LOCALLY (trustless): write backup.ps1, restore.ps1, and
-   evaluate-workspaces.ps1 into the tool directory from this repo's scripts/ (or the
+5. AUTHOR THE SCRIPTS LOCALLY (trustless): write backup.ps1, restore.ps1,
+   evaluate-workspaces.ps1, and backup-preflight.ps1 into the tool directory from this repo's scripts/ (or the
    fenced source in docs/Companion-Scripts.md), substitute the <TOOL_DIR> and
    <WORKSPACES_ROOT> placeholders with my real paths, and verify each file parses
    ([Parser]::ParseFile, zero errors) before running anything.

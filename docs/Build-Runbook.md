@@ -42,6 +42,22 @@ Two hardening items **do** require a decision and appear as steps: the **folder 
 - A backup **destination** reachable as a path (local drive or `\\server\share`).
 - The Clairvoyance app running (to hire the Archivist) · **local administrator** rights (SYSTEM task, `/B` open-file copy, folder lockdown).
 
+## 1a. Preflight — detect an existing install (idempotency gate; RUN BEFORE the interview)
+
+**Do this before Step 2 — never assume a fresh machine.** Re-running the build over a live install can re-seal the passphrase (**orphaning every existing AES `_secrets.7z`**), duplicate the SYSTEM task, or overwrite a tuned `config.json` / `backup_state.json`. Detect first, with a **probe**, not a glance.
+
+1. **Author `backup-preflight.ps1`** using the Step 5a/5b/5c procedure for that one script (pick `<TOOL_DIR>`, write it from the companion source, verify it parses). It is **read-only** — it mutates nothing, seals nothing, and never touches the task.
+2. **Run it** against the intended tool dir:
+   ```
+   powershell -NoProfile -ExecutionPolicy Bypass -File <TOOL_DIR>\backup-preflight.ps1 -ToolDir <TOOL_DIR>
+   ```
+   Add `-TaskName "<name>"` if a non-default task name was used, `-Json` for machine-readable output, or `-CheckUpdate` to compare the installed version against the latest GitHub release. The probe checks **live** state — the engine scripts parse, `config.json` is valid, the passphrase file actually **DPAPI-unseals on this machine**, and the "Clairvoyance Nightly Backup" SYSTEM task exists — and prints a `VERDICT` (exit code: 0 COMPLETE · 1 NOT_INSTALLED · 2 PARTIAL · 3 DUPLICATE · 4 probe error).
+3. **Branch on the verdict:**
+   - **COMPLETE** → a valid install is already here. **STOP — do not re-run this runbook.** To refresh the scripts use **§Update**; to change the passphrase use **§Rotate** (both below). Never re-seal or re-register as a side effect.
+   - **PARTIAL** → resume at the reported **first-unmet invariant** *only* (e.g. scripts + config + seal present but no task → skip straight to Step 9). Never restart from Step 1; never re-seal an existing valid passphrase.
+   - **DUPLICATE** → ambiguous state (e.g. two same-named SYSTEM tasks). **STOP and ask the user** which is canonical — never guess.
+   - **NOT_INSTALLED** → proceed to Step 2 for a full install.
+
 ## 2. Interview the user (ask, record answers)
 1. **Backup destination** root path.
 2. **Instance name** — default the PC hostname; if multiple Clairvoyance installs share one PC, ask for a nickname (destination subfolder = this name).
@@ -92,6 +108,11 @@ Hire a Staff member named "Clairvoyance Archivist" (a cheap model is fine — th
 This durable memory — not the schedule prompt alone — is what keeps the Archivist behaving as the backup authority in conversation. (The "Archivist operating procedure" doc from Step 5 is human-facing reference; the staff memory is what the Archivist itself loads.)
 
 ## 7. Seal the passphrase (DPAPI, user-run)
+> **⚠️ HARD REFUSE re-sealing — this is the one irreversible step.** Before sealing, check whether a sealed passphrase file **already exists** at `<passphraseFile>`. **If it does, DO NOT overwrite it** — the existing AES `_secrets.7z` archives are keyed to the current passphrase, so re-sealing a *different* one permanently orphans every existing encrypted backup, and re-sealing the *same* one is pointless. This is not a skippable prompt: stop, and only proceed to re-key through **§Rotate** (which re-encrypts the archives under the new key). The preflight in Step 1a already reports the seal state; guard here too (belt-and-suspenders) since the runbook can be entered mid-way:
+> ```
+> if(Test-Path -LiteralPath "<passphraseFile>"){ throw "passphrase already sealed at <passphraseFile> — refusing to re-seal (would orphan existing _secrets.7z). Use the Rotate path to re-key." }
+> ```
+
 The user runs, in PowerShell — **typing the passphrase at the masked prompt, never pasting it into the command** (a `$` in a double-quoted string expands as a variable and exposes it):
 ```
 Add-Type -AssemblyName System.Security; $sec = Read-Host -AsSecureString "Backup secrets passphrase"
@@ -103,7 +124,11 @@ Store the same passphrase in a password manager. It is **machine-bound** (LocalM
 For each orchestrator in the registry: (a) **audit** whether it checks the backup pause flag before starting automated work; (b) **remediate** — add the pause-contract to its workspace `CLAUDE.md` ("before any automated run, check for the `BACKUP_IN_PROGRESS` flag; if present, do not start; wait until cleared"); (c) **drill** — set the flag, confirm it holds, clear it, confirm it resumes; (d) **record** compliance. A non-compliant orchestrator doesn't break the backup (crash-consistent copy) but is flagged.
 
 ## 9. Create the SYSTEM scheduled task
+**Check before you register** (idempotency): if a task named "Clairvoyance Nightly Backup" already exists (`Get-ScheduledTask -TaskName "Clairvoyance Nightly Backup" -ErrorAction SilentlyContinue`), do **not** blindly create a second one — a duplicate means two SYSTEM backups race nightly. Update the existing task in place, or unregister-then-register the single canonical task. If the preflight reported **DUPLICATE**, resolve that with the user first.
+
 Elevated: register a task **RunAs SYSTEM, RunLevel Highest**, at the chosen time, action = `powershell.exe -File <tool>\backup.ps1 -ConfigPath <tool>\config.json -Mode Live`, execution-time-limit slightly under the reboot/window. Set the Archivist's Clairvoyance schedule to fire shortly after (monitor role). **Create both disabled** until validated.
+
+**Config / state writes are merge-preserving, never truncate-and-rewrite.** When updating an existing `config.json` (re-install / retune), read-modify-write and preserve unknown keys, and never touch `backup_state.json` (it holds the GFS tier cursors + `lastFullRehash` — clobbering it silently resets retention/tiering). Write via temp-file + rename (atomic) so a mid-write crash can't corrupt either file.
 
 ## 10. Validate
 Run one supervised backup to a **test destination folder** (use `backup.ps1 -RunDate <today>` to bypass the abort-window guard for a daytime run; `-SkipSecrets` if you don't want to involve the passphrase). Confirm: tiers created; secrets archive AES-encrypted; `restore.ps1 -Mode Verify` passes on **both** `_main.7z` and `_secrets.7z` (secrets needs the passphrase via `RESTORE_SECRETS_PASS`); and confirm a **time-boxed run** (note the elapsed time vs the task time-limit from Step 9). Then remove the test folder.
@@ -119,7 +144,24 @@ Run one supervised backup to a **test destination folder** (use `backup.ps1 -Run
 Only proceed once a SYSTEM-context write to the real destination succeeds.
 
 ## 12. Lock down + go-live
-Re-ACL the tool directory to **SYSTEM + Administrators only** (remove Authenticated Users) and **transfer ownership to Administrators** (so a standard token can't re-grant). **Do this LAST** — it locks the folder from non-elevated editing. Then **enable** both scheduled tasks. (Enabling only arms them; the first backup runs at the next scheduled time.)
+
+**First, write the install manifest** `<TOOL_DIR>\.backup-install.json` (do this *before* the ACL lockdown, while the folder is still writable). It records what was installed so `backup-preflight.ps1` has a version stamp to read (and cross-check against live probes on the next run). Write it **atomically** (temp + rename):
+```powershell
+$m = [ordered]@{
+  schemaVersion = 1
+  version       = "<release-tag e.g. 0.2.0>"      # the repo version these scripts came from
+  installedAt   = (Get-Date).ToString('o')
+  taskName      = "Clairvoyance Nightly Backup"
+  components    = [ordered]@{ scripts = $true; config = $true; seal = $true; task = $true }
+  sealFingerprint = "<first 16 hex of SHA-256 of the sealed .secretkey bytes>"   # NON-secret: hash of the already-encrypted blob
+}
+$tmp = "<TOOL_DIR>\.backup-install.json.tmp"
+($m | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath $tmp -Encoding UTF8
+Move-Item -LiteralPath $tmp -Destination "<TOOL_DIR>\.backup-install.json" -Force
+```
+The manifest is **advisory** — the preflight always re-verifies each component against live state, so a stale/lying manifest surfaces as drift rather than a false COMPLETE. Never store the passphrase or its plaintext here.
+
+Then re-ACL the tool directory to **SYSTEM + Administrators only** (remove Authenticated Users) and **transfer ownership to Administrators** (so a standard token can't re-grant). **Do this LAST** — it locks the folder from non-elevated editing. Then **enable** both scheduled tasks. (Enabling only arms them; the first backup runs at the next scheduled time.)
 
 **Optional SMB-signing hardening — apply ONLY if the user elected YES in interview Q12.** Skip entirely otherwise (this is the safe default; it is **not** required for the backup to work).
 ```powershell
@@ -136,3 +178,13 @@ Set-SmbClientConfiguration -RequireSecuritySignature $true -Force   # takes effe
 - `... -Mode InPlace -Force -ConfigPath <config>` — **WHOLE-ARCHIVE** restore to original locations (overwrites every file present in the archive), **validated** against allowed roots (rejects UNC/traversal). Use only for genuine recovery — see the Step 10 warning. For a single file, use `-Mode Extract -Dest <scratch>` and copy the one file back.
 - Secrets: `-Archive <_secrets.7z>` with the passphrase (env `RESTORE_SECRETS_PASS`).
 - Each archive's embedded `RECOVERY.md` has the clean-install rebuild steps.
+
+## §Update — refresh the scripts on an existing install (NOT a re-install)
+Upgrading an already-installed system must **not** re-run this runbook (that re-hits the mutating steps). Update touches **only repo-sourced files** and never re-seals the passphrase or re-registers the task:
+1. Run `backup-preflight.ps1 -CheckUpdate`; proceed only if it reports **COMPLETE** and an update is available.
+2. Re-author `backup.ps1`, `restore.ps1`, `evaluate-workspaces.ps1`, `backup-preflight.ps1` from the new companion source, substitute placeholders, and **verify each parses** before replacing the live files (keep `.bak` copies). The tool dir may need a temporary ACL grant if it was locked in Step 12; restore the lockdown after.
+3. Do **not** touch `config.json`, `backup_state.json`, `.secretkey`, or the scheduled task. Bump `version` in `.backup-install.json` (atomic write, as in Step 12).
+4. Run one supervised `backup.ps1 -RunDate <today>` and confirm `last-run.json` `ok=true`.
+
+## §Rotate — change the passphrase (the ONLY sanctioned way to replace the seal)
+Re-sealing is otherwise refused (Step 7) because the AES archives are keyed to the current passphrase. To genuinely re-key: (1) with the **old** passphrase, `restore.ps1 -Mode Extract` any secrets you must preserve to a scratch dir; (2) seal the **new** passphrase; (3) re-encrypt — the simplest safe path is to let the next backups build fresh `_secrets.7z` under the new key and **retain the old encrypted archives + the old passphrase** until retention ages them out (older archives stay decryptable only with the old key). Never delete the old passphrase while archives encrypted under it are still within their retention window.

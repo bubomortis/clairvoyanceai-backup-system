@@ -231,9 +231,9 @@ try {
   Assert-Window "secrets"
 
   # 2. gather secrets from LIVE sources (F4); F7 scan gate on main
-  $secEntries = if(-not $SkipSecrets){ @(Get-SecretFilesLive) } else { @() }
+  $secEntries = if(-not $SkipSecrets){ Get-SecretFilesLive } else { @() }   # NO @() wrap -- Get-SecretFilesLive returns a comma-guarded array (',@($out)'); wrapping re-nests it (same trap as the line-below manifest-nest-fix). Comma-guarded return => assign directly. (manifest-nest-fix 2026-07-23)
   Log "secrets-split" "PASS" "main=$($mainMan.Count) secret=$($secEntries.Count)"
-  $mainMan = @(Scan-Secrets $mainMan)   # B2: may scrub (hash updated in place) or drop unscrubbable files
+  $mainMan = Scan-Secrets $mainMan      # B2: may scrub (hash updated in place) or drop unscrubbable files. NOTE: NO @() wrap -- Scan-Secrets already returns a comma-guarded array (',@($out)'); wrapping in @() re-nests it into a single-element array, which collapses $mainMan.Count to 1, breaks the protected-paths assertion (covRel loses every real path -> false MISSING), and serializes MANIFEST.json as {value:[...],Count:N} instead of a bare array. (manifest-nest-fix 2026-07-23)
   $allManifest = @($mainMan) + @($secEntries | Select-Object rel,sha256,bytes,source,category,target)   # rebuild AFTER scrub so manifests match archived bytes
 
   # 2b. Staff-continuity coverage assertion (F14): staff.json / personas / .Clairvoyance memory must be in the archive.
