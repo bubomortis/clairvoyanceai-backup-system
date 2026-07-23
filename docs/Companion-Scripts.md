@@ -181,6 +181,9 @@ function Write-Recovery($file){
   $L=New-Object System.Collections.Generic.List[string]
   $L.Add("# Clairvoyance - Bare-Metal Recovery Plan"); $L.Add("Instance: $instName | stamp: $stamp | Generated: $($now.ToString('u'))"); $L.Add("")
   $L.Add("## Archives"); $L.Add("- backup_${stamp}_main.7z - plaintext, all non-secret files; see MANIFEST.json."); $L.Add("- backup_${stamp}_secrets.7z - AES-256 (credentials + any encrypt-elected workspaces); full inventory in MANIFEST.full.json inside it; passphrase = credential '$($cfg.secretsCredentialName)' (password manager).")
+  $L.Add(""); $L.Add("## Passphrase / seal (machine-bound -- re-seal on recovery, do NOT copy the old seal)")
+  $L.Add("- The '.secretkey' is a LocalMachine-DPAPI seal of the passphrase: machine-bound, and NOT included in this backup. Copying an old '.secretkey' to a rebuilt or different computer will NOT work -- it cannot unseal there.")
+  $L.Add("- On ANY rebuild or a DIFFERENT computer: start with a fresh tool dir and RE-SEAL THE SAME passphrase (credential '$($cfg.secretsCredentialName)', password manager) via runbook Step 7. Recovery/transport re-seals the SAME passphrase -- this is SAFE and does NOT orphan anything (the archives are keyed to the passphrase, not to the machine-bound blob). ROTATE is ONLY for CHANGING the passphrase; never seal a DIFFERENT passphrase over existing archives.")
   $L.Add(""); $L.Add("## Source -> restore target"); foreach($s in $script:effectiveSources){ $L.Add("- [$($s.category)] $($s.name) ($(if($s.encrypt){'ENCRYPTED'}else{'plain'})) -> $($s.path)") }
   $L.Add(""); $L.Add("## Rebuild: 1.Reinstall Clairvoyance 2.restore.ps1 -Mode InPlace (main) 3.decrypt _secrets.7z 4.re-add workspaces 5.RE-AUTH OAuth tools 6.reconstitute deps (rclone/SMB/local-AI; whisper via setup-whisper.ps1) 7.recreate the SYSTEM backup task (03:00).")
   $L.Add(""); $L.Add("## Environment snapshot")
@@ -564,9 +567,9 @@ function Probe-Seal(){
       $fp = ([System.BitConverter]::ToString((New-Object Security.Cryptography.SHA256Managed).ComputeHash($b))).Replace('-','').Substring(0,16).ToLower()
       return (New-Component $true "seals present and DPAPI-unseals (LocalMachine); sealFingerprint=$fp")
     }
-    return (New-Component $false "seal file present but unsealed to empty value (CORRUPT -- do NOT overwrite; needs rotate)")
+    $c=New-Component $false "seal file present but unsealed to empty value (CORRUPT -- do NOT blindly overwrite; recover by re-sealing the SAME passphrase, rotate only to change it)"; $c | Add-Member NoteProperty foreign $true -Force; return $c
   } catch {
-    return (New-Component $false "seal file present but does NOT unseal on this machine (foreign/corrupt -- do NOT overwrite; needs rotate): $($_.Exception.Message)")
+    $c=New-Component $false "seal file present but does NOT unseal on this machine (machine-bound; expected after rebuild/transport -- recover by re-sealing the SAME passphrase, rotate only to change it): $($_.Exception.Message)"; $c | Add-Member NoteProperty foreign $true -Force; return $c
   }
 }
 
@@ -622,9 +625,13 @@ try {
   $firstUnmet = $null
   foreach($k in $core.Keys){ if(-not $core[$k].present){ $firstUnmet = $k; break } }
 
+  # A foreign/corrupt seal (present but won't unseal on this machine) is NOT a "resume and seal" case --
+  # re-sealing it orphans the archives keyed to the original passphrase. Distinguish it from a missing seal.
+  $sealForeign = ($seal.PSObject.Properties.Name -contains 'foreign') -and $seal.foreign
+
   if($isDuplicate){ $verdict='DUPLICATE'; $exit=3 }
   elseif($presentCount -eq 4){ $verdict='COMPLETE'; $exit=0 }
-  elseif($presentCount -eq 0){ $verdict='NOT_INSTALLED'; $exit=1 }
+  elseif($presentCount -eq 0 -and -not $sealForeign){ $verdict='NOT_INSTALLED'; $exit=1 }
   else { $verdict='PARTIAL'; $exit=2 }
 
   # manifest drift: manifest claims a component installed but live probe says missing
@@ -644,6 +651,7 @@ try {
     components      = [ordered]@{ scripts=$scripts; config=$config; seal=$seal; task=$task }
     presentCount    = $presentCount
     firstUnmet      = $firstUnmet
+    sealForeign     = $sealForeign
     manifestPresent = [bool]$manifest
     manifestDrift   = $drift
     installedVersion= $installedVersion
@@ -653,12 +661,14 @@ try {
   if($Json){ ($result | ConvertTo-Json -Depth 6); exit $exit }
 
   # ---- human-readable report ----
-  $recommend = switch($verdict){
+  $recommend = if($sealForeign){
+    "STOP -- the passphrase file is present but does NOT unseal on THIS machine. The seal is machine-bound (LocalMachine DPAPI), so this is EXPECTED after an OS rebuild or when the tool dir was copied to another computer. Choose the RIGHT path -- do not blindly re-seal: (1) RECOVERY / TRANSPORT with the SAME passphrase (you still have it in your password manager) -- delete this stale machine-bound seal, then RE-SEAL THE SAME PASSPHRASE from your password manager (Runbook Step 7). This is recovery, NOT rotation; it does NOT orphan anything -- the archives are keyed to the passphrase, not to this blob. (2) ROTATE -- ONLY if you actually intend to CHANGE the passphrase; follow the Rotate path. NEVER seal a DIFFERENT passphrase over existing archives -- that permanently orphans every _secrets.7z keyed to the old one."
+  } else { switch($verdict){
     'COMPLETE'      { "STOP -- a valid install is already in place. Do NOT re-run the installer, re-seal the passphrase, or re-register the task. Use the separate Update path to refresh repo-sourced scripts, or the Rotate path to re-key." }
     'PARTIAL'       { "RESUME the runbook at the first unmet invariant: '$firstUnmet'. Do NOT restart from Step 1 -- complete only what is missing. Never re-seal an existing valid passphrase." }
     'DUPLICATE'     { "STOP and ask the user. An ambiguous state was detected (see below) -- do not guess which is canonical." }
     'NOT_INSTALLED' { "Proceed with a full install per the runbook." }
-  }
+  } }
   Write-Host ""
   Write-Host "  Clairvoyance Backup -- Install Preflight"
   Write-Host "  ---------------------------------------"
@@ -667,7 +677,8 @@ try {
   Write-Host ("  task    : {0}" -f $TaskName)
   Write-Host ""
   foreach($k in $core.Keys){ Write-Host ("  [{0}] {1,-8} {2}" -f $(if($core[$k].present){'x'}else{' '}),$k,$core[$k].detail) }
-  if($firstUnmet){ Write-Host ("  first unmet invariant (resume here): {0}" -f $firstUnmet) }
+  if($sealForeign){ Write-Host "  [!] SEAL IS FOREIGN -- present but does NOT unseal on this machine (machine-bound; expected after rebuild/transport). RECOVERY = delete the stale seal + re-seal the SAME passphrase from your password manager (safe). ROTATE only if changing the passphrase. Never seal a DIFFERENT passphrase over existing archives." }
+  elseif($firstUnmet){ Write-Host ("  first unmet invariant (resume here): {0}" -f $firstUnmet) }
   if($drift.Count){ Write-Host ("  [!] MANIFEST DRIFT -- .backup-install.json claims installed but live probe missing: {0}" -f ($drift -join ', ')) }
   if($manifest -and $installedVersion){ Write-Host ("  installed version (manifest): {0}" -f $installedVersion) }
   if($update){ if($update.updateAvailable){ Write-Host ("  UPDATE AVAILABLE: installed {0} -> latest {1}" -f $update.installed,$update.latest) } elseif($update.note){ Write-Host ("  update check: {0}" -f $update.note) } else { Write-Host ("  up to date (latest {0})" -f $update.latest) } }

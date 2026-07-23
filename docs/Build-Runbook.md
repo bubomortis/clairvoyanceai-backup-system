@@ -108,9 +108,14 @@ Hire a Staff member named "Clairvoyance Archivist" (a cheap model is fine — th
 This durable memory — not the schedule prompt alone — is what keeps the Archivist behaving as the backup authority in conversation. (The "Archivist operating procedure" doc from Step 5 is human-facing reference; the staff memory is what the Archivist itself loads.)
 
 ## 7. Seal the passphrase (DPAPI, user-run)
-> **⚠️ HARD REFUSE re-sealing — this is the one irreversible step.** Before sealing, check whether a sealed passphrase file **already exists** at `<passphraseFile>`. **If it does, DO NOT overwrite it** — the existing AES `_secrets.7z` archives are keyed to the current passphrase, so re-sealing a *different* one permanently orphans every existing encrypted backup, and re-sealing the *same* one is pointless. This is not a skippable prompt: stop, and only proceed to re-key through **§Rotate** (which re-encrypts the archives under the new key). The preflight in Step 1a already reports the seal state; guard here too (belt-and-suspenders) since the runbook can be entered mid-way:
+> **⚠️ Re-sealing is the one irreversible step — get the case right.** Before sealing, check whether a passphrase file **already exists** at `<passphraseFile>` **and whether it unseals on this machine** (Step 1a's preflight reports both). Three cases:
+> - **Present and unseals** (same machine, valid install): **DO NOT re-seal** — re-sealing a *different* passphrase permanently orphans every existing `_secrets.7z`, and re-sealing the *same* one is pointless. Use **§Rotate** only to deliberately *change* the passphrase.
+> - **Present but does NOT unseal** (foreign/corrupt — e.g. after an OS rebuild, or a copied/transported tool dir): this is a **RECOVERY / TRANSPORT, not a rotation.** **Delete the stale machine-bound seal, then re-seal THE SAME passphrase** from your password manager (command below). Re-sealing the *same* passphrase is **safe and does not orphan anything** — the archives are keyed to the passphrase, not to the machine-bound blob. (Only choose **§Rotate** if you also intend to *change* the passphrase.)
+> - **Absent** (fresh install): seal normally.
+>
+> Guard (belt-and-suspenders, since the runbook can be entered mid-way) — refuse a *blind* overwrite, while the message names the safe recovery action:
 > ```
-> if(Test-Path -LiteralPath "<passphraseFile>"){ throw "passphrase already sealed at <passphraseFile> — refusing to re-seal (would orphan existing _secrets.7z). Use the Rotate path to re-key." }
+> if(Test-Path -LiteralPath "<passphraseFile>"){ throw "passphrase file already exists at <passphraseFile>. RECOVERY/TRANSPORT with the SAME passphrase: delete it, then re-seal the same passphrase (safe). Valid seal on this machine: do NOT re-seal -- a different passphrase orphans existing _secrets.7z; use Rotate only to change it." }
 > ```
 
 The user runs, in PowerShell — **typing the passphrase at the masked prompt, never pasting it into the command** (a `$` in a double-quoted string expands as a variable and exposes it):
@@ -118,7 +123,7 @@ The user runs, in PowerShell — **typing the passphrase at the masked prompt, n
 Add-Type -AssemblyName System.Security; $sec = Read-Host -AsSecureString "Backup secrets passphrase"
 [Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes([Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))), $null, [Security.Cryptography.DataProtectionScope]::LocalMachine)) | Set-Content -LiteralPath "<passphraseFile>" -Encoding ASCII
 ```
-Store the same passphrase in a password manager. It is **machine-bound** (LocalMachine DPAPI) so a SYSTEM task can read it; on a bare-metal rebuild you re-seal from the password manager.
+Store the same passphrase in a password manager. It is **machine-bound** (LocalMachine DPAPI) so a SYSTEM task can read it. On a bare-metal rebuild **or a move to another computer, do not copy the old `.secretkey`** (it won't unseal elsewhere) — start fresh and **re-seal the *same* passphrase** from the password manager. That is *recovery*, not rotation: it restores decryptability of all existing archives (they are keyed to the passphrase, not the machine-bound seal).
 
 ## 8. §9a — Orchestrator pause-compliance onboarding
 For each orchestrator in the registry: (a) **audit** whether it checks the backup pause flag before starting automated work; (b) **remediate** — add the pause-contract to its workspace `CLAUDE.md` ("before any automated run, check for the `BACKUP_IN_PROGRESS` flag; if present, do not start; wait until cleared"); (c) **drill** — set the flag, confirm it holds, clear it, confirm it resumes; (d) **record** compliance. A non-compliant orchestrator doesn't break the backup (crash-consistent copy) but is flagged.
@@ -187,4 +192,6 @@ Upgrading an already-installed system must **not** re-run this runbook (that re-
 4. Run one supervised `backup.ps1 -RunDate <today>` and confirm `last-run.json` `ok=true`.
 
 ## §Rotate — change the passphrase (the ONLY sanctioned way to replace the seal)
+> **Rotate ≠ recover.** Rotation is for **changing** the passphrase to a *new* value. If you are **recovering or moving to another computer with the SAME passphrase**, that is **not** rotation — do **not** follow the steps below. Instead, on the fresh/rebuilt machine, delete any stale machine-bound `.secretkey` and **re-seal the same passphrase** from your password manager (Step 7). That restores decryptability of every existing archive and orphans nothing. Rotation (below) is only when you want a *different* passphrase going forward.
+
 Re-sealing is otherwise refused (Step 7) because the AES archives are keyed to the current passphrase. To genuinely re-key: (1) with the **old** passphrase, `restore.ps1 -Mode Extract` any secrets you must preserve to a scratch dir; (2) seal the **new** passphrase; (3) re-encrypt — the simplest safe path is to let the next backups build fresh `_secrets.7z` under the new key and **retain the old encrypted archives + the old passphrase** until retention ages them out (older archives stay decryptable only with the old key). Never delete the old passphrase while archives encrypted under it are still within their retention window.

@@ -173,6 +173,9 @@ function Write-Recovery($file){
   $L=New-Object System.Collections.Generic.List[string]
   $L.Add("# Clairvoyance - Bare-Metal Recovery Plan"); $L.Add("Instance: $instName | stamp: $stamp | Generated: $($now.ToString('u'))"); $L.Add("")
   $L.Add("## Archives"); $L.Add("- backup_${stamp}_main.7z - plaintext, all non-secret files; see MANIFEST.json."); $L.Add("- backup_${stamp}_secrets.7z - AES-256 (credentials + any encrypt-elected workspaces); full inventory in MANIFEST.full.json inside it; passphrase = credential '$($cfg.secretsCredentialName)' (password manager).")
+  $L.Add(""); $L.Add("## Passphrase / seal (machine-bound -- re-seal on recovery, do NOT copy the old seal)")
+  $L.Add("- The '.secretkey' is a LocalMachine-DPAPI seal of the passphrase: machine-bound, and NOT included in this backup. Copying an old '.secretkey' to a rebuilt or different computer will NOT work -- it cannot unseal there.")
+  $L.Add("- On ANY rebuild or a DIFFERENT computer: start with a fresh tool dir and RE-SEAL THE SAME passphrase (credential '$($cfg.secretsCredentialName)', password manager) via runbook Step 7. Recovery/transport re-seals the SAME passphrase -- this is SAFE and does NOT orphan anything (the archives are keyed to the passphrase, not to the machine-bound blob). ROTATE is ONLY for CHANGING the passphrase; never seal a DIFFERENT passphrase over existing archives.")
   $L.Add(""); $L.Add("## Source -> restore target"); foreach($s in $script:effectiveSources){ $L.Add("- [$($s.category)] $($s.name) ($(if($s.encrypt){'ENCRYPTED'}else{'plain'})) -> $($s.path)") }
   $L.Add(""); $L.Add("## Rebuild: 1.Reinstall Clairvoyance 2.restore.ps1 -Mode InPlace (main) 3.decrypt _secrets.7z 4.re-add workspaces 5.RE-AUTH OAuth tools 6.reconstitute deps (rclone/SMB/local-AI; whisper via setup-whisper.ps1) 7.recreate the SYSTEM backup task (03:00).")
   $L.Add(""); $L.Add("## Environment snapshot")
