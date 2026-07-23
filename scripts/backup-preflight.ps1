@@ -91,9 +91,9 @@ function Probe-Seal(){
       $fp = ([System.BitConverter]::ToString((New-Object Security.Cryptography.SHA256Managed).ComputeHash($b))).Replace('-','').Substring(0,16).ToLower()
       return (New-Component $true "seals present and DPAPI-unseals (LocalMachine); sealFingerprint=$fp")
     }
-    $c=New-Component $false "seal file present but unsealed to empty value (CORRUPT -- do NOT overwrite; needs rotate)"; $c | Add-Member NoteProperty foreign $true -Force; return $c
+    $c=New-Component $false "seal file present but unsealed to empty value (CORRUPT -- do NOT blindly overwrite; recover by re-sealing the SAME passphrase, rotate only to change it)"; $c | Add-Member NoteProperty foreign $true -Force; return $c
   } catch {
-    $c=New-Component $false "seal file present but does NOT unseal on this machine (foreign/corrupt -- do NOT overwrite; needs rotate): $($_.Exception.Message)"; $c | Add-Member NoteProperty foreign $true -Force; return $c
+    $c=New-Component $false "seal file present but does NOT unseal on this machine (machine-bound; expected after rebuild/transport -- recover by re-sealing the SAME passphrase, rotate only to change it): $($_.Exception.Message)"; $c | Add-Member NoteProperty foreign $true -Force; return $c
   }
 }
 
@@ -186,7 +186,7 @@ try {
 
   # ---- human-readable report ----
   $recommend = if($sealForeign){
-    "STOP -- the passphrase file is present but does NOT unseal on this machine (foreign or corrupt seal -- e.g. copied from another PC, or a bare-metal/OS migration). Do NOT re-seal and do NOT 'resume': re-sealing a new passphrase permanently orphans every existing AES _secrets.7z keyed to the original. Route to the Rotate path -- recover secrets with the ORIGINAL passphrase/machine, then re-key. Only if this is a fresh machine with NO dependent encrypted archives may you remove the stale seal file and install."
+    "STOP -- the passphrase file is present but does NOT unseal on THIS machine. The seal is machine-bound (LocalMachine DPAPI), so this is EXPECTED after an OS rebuild or when the tool dir was copied to another computer. Choose the RIGHT path -- do not blindly re-seal: (1) RECOVERY / TRANSPORT with the SAME passphrase (you still have it in your password manager) -- delete this stale machine-bound seal, then RE-SEAL THE SAME PASSPHRASE from your password manager (Runbook Step 7). This is recovery, NOT rotation; it does NOT orphan anything -- the archives are keyed to the passphrase, not to this blob. (2) ROTATE -- ONLY if you actually intend to CHANGE the passphrase; follow the Rotate path. NEVER seal a DIFFERENT passphrase over existing archives -- that permanently orphans every _secrets.7z keyed to the old one."
   } else { switch($verdict){
     'COMPLETE'      { "STOP -- a valid install is already in place. Do NOT re-run the installer, re-seal the passphrase, or re-register the task. Use the separate Update path to refresh repo-sourced scripts, or the Rotate path to re-key." }
     'PARTIAL'       { "RESUME the runbook at the first unmet invariant: '$firstUnmet'. Do NOT restart from Step 1 -- complete only what is missing. Never re-seal an existing valid passphrase." }
@@ -201,7 +201,7 @@ try {
   Write-Host ("  task    : {0}" -f $TaskName)
   Write-Host ""
   foreach($k in $core.Keys){ Write-Host ("  [{0}] {1,-8} {2}" -f $(if($core[$k].present){'x'}else{' '}),$k,$core[$k].detail) }
-  if($sealForeign){ Write-Host "  [!] SEAL IS FOREIGN/CORRUPT -- present but does NOT unseal on this machine. Do NOT re-seal (would orphan existing _secrets.7z); route to Rotate." }
+  if($sealForeign){ Write-Host "  [!] SEAL IS FOREIGN -- present but does NOT unseal on this machine (machine-bound; expected after rebuild/transport). RECOVERY = delete the stale seal + re-seal the SAME passphrase from your password manager (safe). ROTATE only if changing the passphrase. Never seal a DIFFERENT passphrase over existing archives." }
   elseif($firstUnmet){ Write-Host ("  first unmet invariant (resume here): {0}" -f $firstUnmet) }
   if($drift.Count){ Write-Host ("  [!] MANIFEST DRIFT -- .backup-install.json claims installed but live probe missing: {0}" -f ($drift -join ', ')) }
   if($manifest -and $installedVersion){ Write-Host ("  installed version (manifest): {0}" -f $installedVersion) }
