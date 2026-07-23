@@ -24,6 +24,9 @@ Requirements: Windows 10/11 · PowerShell 5.1+ · 7-Zip · robocopy (built in) �
 
 Choose **one** method.
 
+> [!NOTE]
+> **Already have the backup system installed?** Do **not** use these install options to move to a newer version — re-running the installer can orphan your encrypted archives. See [**Upgrading from an earlier version**](#upgrading-from-an-earlier-version-read-this-if-the-system-is-already-installed) below.
+
 ### Option A: Ask Clairvoyance to install it
 
 Use this if you have a trusted Clairvoyance coding agent (Staff) that can run commands on your Windows machine. Paste the following prompt to that agent verbatim:
@@ -78,6 +81,21 @@ root before doing anything. Observe these rules:
 ### Option B: Install it yourself
 
 Open [docs/Build-Runbook.md](docs/Build-Runbook.md) and follow it top to bottom. It is written to be executed either by an agent or by a person; the same interview questions, script-authoring steps, and approval gates apply.
+
+## Upgrading from an earlier version (READ THIS if the system is already installed)
+
+> [!CAUTION]
+> **This version introduces the idempotency/upgrade tooling that earlier versions did not have.** Any system installed before it has **no** `backup-preflight.ps1`, **no** `.backup-install.json` manifest, and **no** `§Update`/`§Rotate` path — so the safe-upgrade machinery isn't present on the existing install yet, and **the upgrade itself is the risky moment**. Do **not** "upgrade" by re-running the installer or the Build Runbook top-to-bottom: that would re-run the mutating steps and can **re-seal the passphrase (permanently orphaning every existing AES `_secrets.7z`)**, register a **duplicate** SYSTEM task, and **overwrite** your tuned `config.json` / `backup_state.json` (the GFS tier state). This first upgrade is a **careful, in-place file refresh — not a reinstall.**
+
+**Staff: to upgrade an existing install to this version, do exactly this (attended):**
+
+1. **Do NOT re-run the installer / runbook interview.** This is a script refresh, nothing else.
+2. **Refresh only the scripts.** In the *existing* tool directory, keep `.bak` copies, then author the four scripts from this version — `backup.ps1`, `restore.ps1`, `evaluate-workspaces.ps1`, and the new `backup-preflight.ps1` — from `scripts/` (or the fenced source in `docs/Companion-Scripts.md`), substituting the same `<TOOL_DIR>` / `<WORKSPACES_ROOT>`, and **verify each parses** (`[Parser]::ParseFile`, zero errors) before replacing the live file. If the tool dir was ACL-locked at go-live, grant write temporarily and **restore the lockdown afterward**.
+3. **Do NOT touch** `.secretkey` (the sealed passphrase), `config.json`, `backup_state.json`, or the scheduled task. Leave the passphrase and task exactly as they are — the new code does not require re-sealing or re-registering.
+4. **Backfill the install manifest once.** Write `<TOOL_DIR>\.backup-install.json` for the first time (atomically — see Runbook Step 12) recording the *existing* install: `version` = this version, `components` all `true`, and `sealFingerprint` from the current sealed key. This gives future preflights a version stamp so subsequent upgrades use the ordinary `§Update` path.
+5. **Confirm with the probe.** Run `backup-preflight.ps1 -ToolDir <TOOL_DIR>` and confirm it reports **COMPLETE**. Then run one supervised `backup.ps1 -RunDate <today>` and confirm `last-run.json` shows `ok=true`.
+
+**Your old backups stay restorable.** This version's `restore.ps1` transparently reads the legacy `MANIFEST.json` shape (`{"value":[…],"Count":N}`) that the previous version's manifest bug produced, so archives created before the upgrade remain fully restorable — no migration of existing archives is needed. After this one-time manual upgrade, all future upgrades follow the standard **§Update** path in the runbook.
 
 ## Design notes
 
