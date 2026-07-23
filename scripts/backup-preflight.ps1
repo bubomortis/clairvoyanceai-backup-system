@@ -91,9 +91,9 @@ function Probe-Seal(){
       $fp = ([System.BitConverter]::ToString((New-Object Security.Cryptography.SHA256Managed).ComputeHash($b))).Replace('-','').Substring(0,16).ToLower()
       return (New-Component $true "seals present and DPAPI-unseals (LocalMachine); sealFingerprint=$fp")
     }
-    return (New-Component $false "seal file present but unsealed to empty value (CORRUPT -- do NOT overwrite; needs rotate)")
+    $c=New-Component $false "seal file present but unsealed to empty value (CORRUPT -- do NOT overwrite; needs rotate)"; $c | Add-Member NoteProperty foreign $true -Force; return $c
   } catch {
-    return (New-Component $false "seal file present but does NOT unseal on this machine (foreign/corrupt -- do NOT overwrite; needs rotate): $($_.Exception.Message)")
+    $c=New-Component $false "seal file present but does NOT unseal on this machine (foreign/corrupt -- do NOT overwrite; needs rotate): $($_.Exception.Message)"; $c | Add-Member NoteProperty foreign $true -Force; return $c
   }
 }
 
@@ -149,9 +149,13 @@ try {
   $firstUnmet = $null
   foreach($k in $core.Keys){ if(-not $core[$k].present){ $firstUnmet = $k; break } }
 
+  # A foreign/corrupt seal (present but won't unseal on this machine) is NOT a "resume and seal" case --
+  # re-sealing it orphans the archives keyed to the original passphrase. Distinguish it from a missing seal.
+  $sealForeign = ($seal.PSObject.Properties.Name -contains 'foreign') -and $seal.foreign
+
   if($isDuplicate){ $verdict='DUPLICATE'; $exit=3 }
   elseif($presentCount -eq 4){ $verdict='COMPLETE'; $exit=0 }
-  elseif($presentCount -eq 0){ $verdict='NOT_INSTALLED'; $exit=1 }
+  elseif($presentCount -eq 0 -and -not $sealForeign){ $verdict='NOT_INSTALLED'; $exit=1 }
   else { $verdict='PARTIAL'; $exit=2 }
 
   # manifest drift: manifest claims a component installed but live probe says missing
@@ -171,6 +175,7 @@ try {
     components      = [ordered]@{ scripts=$scripts; config=$config; seal=$seal; task=$task }
     presentCount    = $presentCount
     firstUnmet      = $firstUnmet
+    sealForeign     = $sealForeign
     manifestPresent = [bool]$manifest
     manifestDrift   = $drift
     installedVersion= $installedVersion
@@ -180,12 +185,14 @@ try {
   if($Json){ ($result | ConvertTo-Json -Depth 6); exit $exit }
 
   # ---- human-readable report ----
-  $recommend = switch($verdict){
+  $recommend = if($sealForeign){
+    "STOP -- the passphrase file is present but does NOT unseal on this machine (foreign or corrupt seal -- e.g. copied from another PC, or a bare-metal/OS migration). Do NOT re-seal and do NOT 'resume': re-sealing a new passphrase permanently orphans every existing AES _secrets.7z keyed to the original. Route to the Rotate path -- recover secrets with the ORIGINAL passphrase/machine, then re-key. Only if this is a fresh machine with NO dependent encrypted archives may you remove the stale seal file and install."
+  } else { switch($verdict){
     'COMPLETE'      { "STOP -- a valid install is already in place. Do NOT re-run the installer, re-seal the passphrase, or re-register the task. Use the separate Update path to refresh repo-sourced scripts, or the Rotate path to re-key." }
     'PARTIAL'       { "RESUME the runbook at the first unmet invariant: '$firstUnmet'. Do NOT restart from Step 1 -- complete only what is missing. Never re-seal an existing valid passphrase." }
     'DUPLICATE'     { "STOP and ask the user. An ambiguous state was detected (see below) -- do not guess which is canonical." }
     'NOT_INSTALLED' { "Proceed with a full install per the runbook." }
-  }
+  } }
   Write-Host ""
   Write-Host "  Clairvoyance Backup -- Install Preflight"
   Write-Host "  ---------------------------------------"
@@ -194,7 +201,8 @@ try {
   Write-Host ("  task    : {0}" -f $TaskName)
   Write-Host ""
   foreach($k in $core.Keys){ Write-Host ("  [{0}] {1,-8} {2}" -f $(if($core[$k].present){'x'}else{' '}),$k,$core[$k].detail) }
-  if($firstUnmet){ Write-Host ("  first unmet invariant (resume here): {0}" -f $firstUnmet) }
+  if($sealForeign){ Write-Host "  [!] SEAL IS FOREIGN/CORRUPT -- present but does NOT unseal on this machine. Do NOT re-seal (would orphan existing _secrets.7z); route to Rotate." }
+  elseif($firstUnmet){ Write-Host ("  first unmet invariant (resume here): {0}" -f $firstUnmet) }
   if($drift.Count){ Write-Host ("  [!] MANIFEST DRIFT -- .backup-install.json claims installed but live probe missing: {0}" -f ($drift -join ', ')) }
   if($manifest -and $installedVersion){ Write-Host ("  installed version (manifest): {0}" -f $installedVersion) }
   if($update){ if($update.updateAvailable){ Write-Host ("  UPDATE AVAILABLE: installed {0} -> latest {1}" -f $update.installed,$update.latest) } elseif($update.note){ Write-Host ("  update check: {0}" -f $update.note) } else { Write-Host ("  up to date (latest {0})" -f $update.latest) } }
