@@ -7,6 +7,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-24
+
 ### Added
 - **Install idempotency / preflight probe (`scripts/backup-preflight.ps1`).** A new **read-only** script that detects an existing install by probing **live** state — the engine scripts parse, `config.json` is valid, the DPAPI passphrase file actually unseals *on this machine*, and the "Clairvoyance Nightly Backup" SYSTEM task exists — and prints a parseable `VERDICT` (`NOT_INSTALLED` / `PARTIAL` / `COMPLETE` / `DUPLICATE`; exit codes 0–4; optional `-Json` and `-CheckUpdate`). Modeled on the Persona-Sync (`clvsync`) `status`-as-idempotency-gate pattern, so "install when the system is already in place" is handled by a deterministic probe instead of prose. Wired into `AGENTS.md` rule #4 and a new Build-Runbook **Step 1a** that branches on the verdict (COMPLETE → stop; PARTIAL → resume at the reported first-unmet invariant; DUPLICATE → stop and ask; NOT_INSTALLED → full install).
 - **Destructive-step guards.** Step 7 now **hard-refuses re-sealing** an existing passphrase (re-sealing a different key permanently orphans every existing AES `_secrets.7z`); Step 9 checks for an existing SYSTEM task before registering (prevents duplicate nightly races); config/state writes are specified as merge-preserving + atomic (temp + rename) so a re-install cannot clobber `config.json` or `backup_state.json` (the GFS tier cursors).
@@ -62,5 +64,6 @@ Clairvoyance Versioning Backup System.
 ### Removed
 - `docs/Forum-Description.md` — its content was folded into the README (the standalone forum-post version is retained outside this repo).
 
-[Unreleased]: https://github.com/bubomortis/clairvoyanceai-backup-system/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/bubomortis/clairvoyanceai-backup-system/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/bubomortis/clairvoyanceai-backup-system/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bubomortis/clairvoyanceai-backup-system/releases/tag/v0.1.0
