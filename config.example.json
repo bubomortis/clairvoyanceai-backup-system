@@ -20,7 +20,9 @@
 
   "lastDayOfWeek": "Sunday",
   "abortAfterLocalTime": "03:45",
-  "_comment_abortAfterLocalTime": "Guard: a real (non -RunDate) run aborts if it starts after this local time, to avoid overrunning a reboot/maintenance window. Set just before that window.",
+  "_comment_abortAfterLocalTime": "Guard: a real (non -RunDate) run aborts if it is still running past the NEXT occurrence of this local time on/after the run's start, to avoid overrunning a reboot/maintenance window. A 03:00 nightly gets a ~45min deadline; an off-hours run rolls to the next day's cutoff instead of aborting instantly. Set just before that window.",
+  "minAbortWindowMinutes": 20,
+  "_comment_minAbortWindowMinutes": "Floor for the abort-window deadline (default 20 if omitted). If the computed deadline is within this many minutes of the run's start, it rolls to the next day instead — so a late-starting nightly (machine asleep -> Task Scheduler catch-up near the cutoff) runs to completion rather than aborting mid-run and producing no backup that night. Set a bit above a typical delta run's secrets+compress time.",
 
   "deepVerifySample": 6,
   "_comment_deepVerifySample": "How many random files to extract FROM the destination archive and hash-check after upload.",

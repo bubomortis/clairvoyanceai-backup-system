@@ -33,8 +33,26 @@ $script:pass = $null
 function Log($stage,$status,$detail){ $script:logStages += [pscustomobject]@{ ts=(Get-Date).ToString("s"); stage=$stage; status=$status; detail=$detail }; Write-Host ("[{0}] {1} : {2} {3}" -f (Get-Date).ToString("HH:mm:ss"),$stage,$status,$detail) }
 
 # ---- abort-window guard ----
+# Deadline = first occurrence of abortAfterLocalTime AT OR AFTER run start, NOT a bare
+# same-day time-of-day. The old same-day compare (Get-Date -Hour/-Minute builds *today* at
+# HH:MM) aborted any run started after HH:MM: an attended evening run tripped instantly
+# because 23:xx > today-03:45. Rolling to the next occurrence keeps the nightly's overrun
+# guard intact (start 03:00 -> today 03:45, ~45min deadline) while letting off-hours runs
+# proceed to their next 03:45. Exempt when -RunDate (backfill) is set, as before.
+# Min-window floor: don't arm a deadline too small to complete a run. A late-starting nightly
+# (machine asleep -> Task Scheduler catch-up at ~03:40) would otherwise get a ~5min window and
+# abort BEFORE the secrets stage, yielding NO backup that night while reading as a failure. A
+# window shorter than one run's duration can only ever produce a mid-phase abort, never a
+# completed-then-guarded backup -- so below the floor, roll forward and run to completion.
+# Threshold = config minAbortWindowMinutes (default 20; set a bit above a delta run's
+# secrets+compress time). $now is wall-clock here (armed branch is -not $RunDate).
 $abortAt = $null
-if($cfg.abortAfterLocalTime -and -not $RunDate){ $ap = $cfg.abortAfterLocalTime -split ':'; $abortAt = (Get-Date -Hour ([int]$ap[0]) -Minute ([int]$ap[1]) -Second 0) }
+if($cfg.abortAfterLocalTime -and -not $RunDate){
+  $ap = $cfg.abortAfterLocalTime -split ':'
+  $abortAt = (Get-Date -Hour ([int]$ap[0]) -Minute ([int]$ap[1]) -Second 0)
+  $minWin = if($cfg.minAbortWindowMinutes){ [int]$cfg.minAbortWindowMinutes } else { 20 }
+  if($abortAt -le $now.AddMinutes($minWin)){ $abortAt = $abortAt.AddDays(1) }
+}
 function Assert-Window($phase){ if($abortAt -and (Get-Date) -gt $abortAt){ throw "past abort window ($($cfg.abortAfterLocalTime)) before '$phase'" } }
 
 # ---- boundary helpers ----
