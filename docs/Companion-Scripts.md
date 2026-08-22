@@ -59,7 +59,23 @@ $repoApi = "https://api.github.com/repos/bubomortis/clairvoyanceai-backup-system
 
 if(-not $ConfigPath){ $ConfigPath = Join-Path $ToolDir "config.json" }
 $manifestPath = Join-Path $ToolDir ".backup-install.json"
+# The CORE engine. These must be present on every install, no exceptions.
+# backup.ps1 dot-sources nothing -- it writes and clears the lease file directly -- so the
+# core set is genuinely self-contained and stays unconditional.
 $requiredScripts = @("backup.ps1","restore.ps1","evaluate-workspaces.ps1")
+
+# OPTIONAL components that drag in their own dependencies.
+# The monitoring scripts are a separately-approved mutation (Runbook step 12a), so their
+# ABSENCE is a perfectly valid install and must never fail preflight. What is NOT valid is
+# an optional component present WITHOUT the module it dot-sources: Invoke-BackupHealthCheck.ps1
+# hard dot-sources backup-window.ps1 at load, so that combination is an install which reports
+# healthy and whose watchdog throws the first time it runs -- exactly the "you believe you have
+# backups you do not" failure this system exists to prevent, reached through the tool whose job
+# is to say otherwise.
+# Requiring backup-window.ps1 UNCONDITIONALLY would be the obvious fix and is the wrong one:
+# it fails a correct core-only install, and a check that fires on a healthy system is a check
+# nobody reads.
+$conditionalScripts = @{ "Invoke-BackupHealthCheck.ps1" = @("backup-window.ps1") }
 $requiredConfigKeys = @("instanceName","backupRoot","stagingDir","passphraseFile","sources")
 
 function New-Component($present,$detail){ [pscustomobject]@{ present=[bool]$present; detail=$detail } }
@@ -67,19 +83,46 @@ function New-Component($present,$detail){ [pscustomobject]@{ present=[bool]$pres
 # ---- scripts: present AND parse-clean ----
 function Probe-Scripts(){
   if(-not (Test-Path -LiteralPath $ToolDir)){ return (New-Component $false "tool dir not found: $ToolDir") }
+  # Build the set to check: the core, plus the dependencies of whichever optional
+  # components are actually installed. Derived, never a hardcoded count -- the previous
+  # version asserted "all 3" and went stale the moment the script set grew.
+  $toCheck = @($requiredScripts)
+  $brokenDeps = @()
+  foreach($trigger in $conditionalScripts.Keys){
+    if(-not (Test-Path -LiteralPath (Join-Path $ToolDir $trigger))){ continue }
+    $toCheck += $trigger
+    foreach($dep in $conditionalScripts[$trigger]){
+      $toCheck += $dep
+      if(-not (Test-Path -LiteralPath (Join-Path $ToolDir $dep))){
+        # Reported separately from a plain 'missing': the operator needs to know WHICH
+        # component made this file required, or the fix looks arbitrary.
+        $brokenDeps += "$dep (required because $trigger is installed and dot-sources it)"
+      }
+    }
+  }
+  $toCheck = @($toCheck | Select-Object -Unique)
+
   $missing=@(); $badParse=@()
-  foreach($s in $requiredScripts){
+  foreach($s in $toCheck){
     $p = Join-Path $ToolDir $s
     if(-not (Test-Path -LiteralPath $p)){ $missing += $s; continue }
     $errs=$null
     try { [void][System.Management.Automation.Language.Parser]::ParseFile($p,[ref]$null,[ref]$errs) } catch { $badParse += $s; continue }
     if($errs -and $errs.Count){ $badParse += $s }
   }
-  if($missing.Count -or $badParse.Count){
-    $d = @(); if($missing.Count){ $d += "missing: $($missing -join ', ')" }; if($badParse.Count){ $d += "parse errors: $($badParse -join ', ')" }
+  if($missing.Count -or $badParse.Count -or $brokenDeps.Count){
+    $d = @()
+    if($brokenDeps.Count){ $d += "broken dependency: $($brokenDeps -join '; ')" }
+    # A dep counted above is already named there; do not report it twice.
+    $plainMissing = @($missing | Where-Object { $n = $_; -not ($brokenDeps | Where-Object { $_.StartsWith("$n ") }) })
+    if($plainMissing.Count){ $d += "missing: $($plainMissing -join ', ')" }
+    if($badParse.Count){ $d += "parse errors: $($badParse -join ', ')" }
     return (New-Component $false ($d -join '; '))
   }
-  return (New-Component $true "all 3 scripts present and parse-clean")
+  $optional = @($toCheck | Where-Object { $_ -notin $requiredScripts })
+  $detail = "all $($toCheck.Count) installed script(s) present and parse-clean"
+  $detail += if($optional.Count){ " (core $($requiredScripts.Count) + optional: $($optional -join ', '))" } else { " (core only; no optional components installed)" }
+  return (New-Component $true $detail)
 }
 
 # ---- config: present, valid JSON, required keys ----
