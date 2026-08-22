@@ -7,8 +7,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
-Suggested release: **0.3.0** (additive — no key removed, no script removed, no behaviour
-withdrawn). Promote this heading and tag only at release time.
+## [0.3.0] - 2026-08-22
 
 ### Added
 
@@ -92,6 +91,7 @@ Clairvoyance Versioning Backup System.
 ### Removed
 - `docs/Forum-Description.md` — its content was folded into the README (the standalone forum-post version is retained outside this repo).
 
-[Unreleased]: https://github.com/bubomortis/clairvoyanceai-backup-system/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/bubomortis/clairvoyanceai-backup-system/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/bubomortis/clairvoyanceai-backup-system/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/bubomortis/clairvoyanceai-backup-system/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bubomortis/clairvoyanceai-backup-system/releases/tag/v0.1.0
