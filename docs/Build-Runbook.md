@@ -86,11 +86,15 @@ Fill a `config.json` from the interview: `instanceName`, `backupRoot`, `sevenZip
 
 ## 5. Install scripts + create Home notes
 
-**YOU (the executing Staff member) build the script files to disk — the user never assembles anything by hand.** The Companion Scripts note holds the three scripts as fenced code blocks *only* so the source is human-auditable and trustless (nothing is downloaded from a stranger; it is authored locally from a note the user can read). Turning that note into working files is **your** job, done programmatically with your file tools — do not ask the user to copy-paste out of the markdown.
+**YOU (the executing Staff member) build the script files to disk — the user never assembles anything by hand.** The Companion Scripts note holds the scripts as fenced code blocks *only* so the source is human-auditable and trustless (nothing is downloaded from a stranger; it is authored locally from a note the user can read). Turning that note into working files is **your** job, done programmatically with your file tools — do not ask the user to copy-paste out of the markdown.
 
 **5a. Pick the tool directory `<TOOL_DIR>`.** Choose (and confirm with the user) a stable path on a **local fixed disk** that both **Clairvoyance and the SYSTEM scheduled task can reach and execute from**. It must **not** be a UNC/network share, a OneDrive/synced folder, or a temp/cache dir (the SYSTEM task and the lockdown in Step 12 depend on a stable local ACL'able location). Create the directory now.
 
-**5b. Materialize each script from the note (programmatic, not manual).** For each of the three fenced ```` ```powershell ```` blocks in the Companion Scripts note — `backup.ps1`, `restore.ps1`, `evaluate-workspaces.ps1` — read the note, extract the block's exact contents, and **write it to `<TOOL_DIR>\<name>.ps1` with your file-write tool.** Then substitute the placeholders in the param defaults with the interview values: `<TOOL_DIR>` → the Step 5a path, `<WORKSPACES_ROOT>` → the workspaces root from Step 2 (or leave them and always invoke with explicit `-ConfigPath`/`-Root`).
+**5b. Materialize each script from the note (programmatic, not manual).** For **every** fenced ```` ```powershell ```` block in the Companion Scripts note, read the note, extract the block's exact contents, and **write it to `<TOOL_DIR>\<name>.ps1` with your file-write tool.** The section heading above each block is the filename. Do not work from a memorised list of scripts — the set has grown twice, and both times a hardcoded count in this step went stale; the note's own blocks are the inventory. Cross-check against the table in `AGENTS.md` and stop if the two disagree.
+
+Then substitute the placeholders in the param defaults with the interview values — `<TOOL_DIR>` → the Step 5a path, `<WORKSPACES_ROOT>` → the workspaces root from Step 2, `<DATA_DIR>` / `<TOOLS_DIR>` / `<YOU>` / `<PC>` → the values recorded in Step 2 (or leave them and always invoke with explicit `-ConfigPath`/`-Root`). See the placeholder table in `AGENTS.md`.
+
+> `backup-window.ps1` is a **shared module, dot-sourced by `Invoke-BackupHealthCheck.ps1`** rather than run directly. Write it like the others; it simply has no standalone entry point.
 
 **5c. Verify each written file** before moving on: it must **parse** (e.g. `powershell -NoProfile -Command "[void][System.Management.Automation.Language.Parser]::ParseFile('<TOOL_DIR>\<name>.ps1',[ref]$null,[ref]$null)"` returns no errors) and its body must **match the note** (compare line count / hash of the extracted block against the file, ignoring the placeholder-substituted lines). Only then are the scripts "installed."
 
@@ -178,6 +182,21 @@ Set-SmbClientConfiguration -RequireSecuritySignature $true -Force   # takes effe
 > ```
 > `EnableSecuritySignature` can stay `$true` (opportunistic signing when the server supports it — harmless, does not block guest). Reverting the *requirement* does **not** affect the backup, which uses an authenticated session to its destination.
 
+## 12a. Arm the health check (recommended, and a separate approval)
+
+The engine now ships a watchdog. Installing it is Step 5; **arming it is a mutation and needs its own explicit approval**, exactly like Step 9.
+
+Why it is worth arming: every failure mode this system has is silent from the user's side. A backup that stops running looks identical to a backup that runs fine, until a restore.
+
+1. **Run it once by hand, attended**, and read the output with the user:
+   `powershell -NoProfile -ExecutionPolicy Bypass -File "<TOOL_DIR>\Invoke-BackupHealthCheck.ps1" -Trigger manual`
+   Expect `HEALTHCHECK-RESULT alarm=NO state=OK healthy=True`. Any other state is a real finding — read it, do not re-run until it turns green.
+2. **Schedule it.** Any scheduler will do; a daily Windows Scheduled Task shortly after the nightly window is the portable choice. Pass **`-Trigger scheduled`** — the parameter is mandatory and defaults to `manual`, because a manual run *anchors* a day without *covering* it, and the safe default is to over-report gaps rather than silently mark days covered.
+3. 🔴 **Do not hang the check off the same mechanism as the backup.** If one scheduler stops, you want the *other* one still able to tell you. A watchdog sharing its subject's failure mode is decoration.
+4. **Tell the user what it does not cover.** It reads the engine's own state files. It never opens the destination share and never checks tier promotion, so a deleted or truncated archive still reports healthy — correctly, because the run it describes did succeed. "The engine reported success" is a genuinely weaker claim than "a good backup exists", and the user should hear it in those words.
+
+Optionally also schedule `Invoke-StaffMemoryCoverageCheck.ps1`; it is read-only and reports drift without touching `ok`.
+
 ## 13. Recovery reference
 - `restore.ps1 -Archive <_main.7z> -Mode Verify` — integrity-check vs manifest (no writes).
 - `... -Mode InPlace -Force -ConfigPath <config>` — **WHOLE-ARCHIVE** restore to original locations (overwrites every file present in the archive), **validated** against allowed roots (rejects UNC/traversal). Use only for genuine recovery — see the Step 10 warning. For a single file, use `-Mode Extract -Dest <scratch>` and copy the one file back.
@@ -187,9 +206,10 @@ Set-SmbClientConfiguration -RequireSecuritySignature $true -Force   # takes effe
 ## §Update — refresh the scripts on an existing install (NOT a re-install)
 Upgrading an already-installed system must **not** re-run this runbook (that re-hits the mutating steps). Update touches **only repo-sourced files** and never re-seals the passphrase or re-registers the task:
 1. Run `backup-preflight.ps1 -CheckUpdate`; proceed only if it reports **COMPLETE** and an update is available.
-2. Re-author `backup.ps1`, `restore.ps1`, `evaluate-workspaces.ps1`, `backup-preflight.ps1` from the new companion source, substitute placeholders, and **verify each parses** before replacing the live files (keep `.bak` copies). The tool dir may need a temporary ACL grant if it was locked in Step 12; restore the lockdown after.
+2. Re-author **every** script in the companion source — not a remembered subset; the set has grown between releases — substitute placeholders, and **verify each parses** before replacing the live files (keep `.bak` copies). The tool dir may need a temporary ACL grant if it was locked in Step 12; restore the lockdown after.
 3. Do **not** touch `config.json`, `backup_state.json`, `.secretkey`, or the scheduled task. Bump `version` in `.backup-install.json` (atomic write, as in Step 12).
 4. Run one supervised `backup.ps1 -RunDate <today>` and confirm `last-run.json` `ok=true`.
+5. If the install predates the monitoring scripts, offer Step 12a — but as a **separate, explicitly approved change**, not as part of the refresh. Arming a scheduled task is a mutation, and §Update's whole point is that it performs none.
 
 ## §Rotate — change the passphrase (the ONLY sanctioned way to replace the seal)
 > **Rotate ≠ recover.** Rotation is for **changing** the passphrase to a *new* value. If you are **recovering or moving to another computer with the SAME passphrase**, that is **not** rotation — do **not** follow the steps below. Instead, on the fresh/rebuilt machine, delete any stale machine-bound `.secretkey` and **re-seal the same passphrase** from your password manager (Step 7). That restores decryptability of every existing archive and orphans nothing. Rotation (below) is only when you want a *different* passphrase going forward.

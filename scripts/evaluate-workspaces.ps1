@@ -23,4 +23,3 @@ foreach($r in ($report | Sort-Object totalMB -Descending)){
   foreach($d in $r.topDirs){ "   {0} {1,-24} {2,7:N0} MB" -f $(if($d.large){"[LARGE]"}else{"       "}), $d.name, $d.mb }
   if($r.rootFilesMB -gt 0){ "           (root files){0,15:N0} MB" -f $r.rootFilesMB }
 }
-

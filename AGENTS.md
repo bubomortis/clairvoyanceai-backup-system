@@ -6,7 +6,33 @@ Instructions for an AI agent (Clairvoyance Staff or similar) asked to install, v
 
 `docs/Build-Runbook.md` is the single source of truth for installation. Read it in full and follow it exactly. This file only states the guardrails; it does not replace the runbook. If the runbook and a user's paraphrased request disagree, follow the runbook and raise the discrepancy.
 
-`docs/Companion-Scripts.md` is the canonical source of the four scripts (`backup.ps1`, `restore.ps1`, `evaluate-workspaces.ps1`, and `backup-preflight.ps1` — the read-only install/idempotency probe). `scripts/*.ps1` are verbatim extracts of the same code and may be used interchangeably; both carry `<TOOL_DIR>` / `<WORKSPACES_ROOT>` placeholders that must be substituted for the user's real paths.
+`docs/Companion-Scripts.md` remains the canonical source of the installable scripts — an installing agent authors them from that text, so a trustless adopter needs nothing beyond it. `scripts/*.ps1` are verbatim extracts and may be used interchangeably. `tests/*.ps1` are **not** part of an install and are deliberately absent from the companion document.
+
+| file | role |
+|---|---|
+| `scripts/backup.ps1` | the engine |
+| `scripts/restore.ps1` | restore / verify / extract |
+| `scripts/backup-preflight.ps1` | read-only install & idempotency probe |
+| `scripts/evaluate-workspaces.ps1` | read-only workspace sizing helper |
+| `scripts/backup-window.ps1` | shared quiesce-lease + health module, dot-sourced by the others |
+| `scripts/Invoke-BackupHealthCheck.ps1` | scheduled health verdict; fails closed |
+| `scripts/Invoke-StaffMemoryCoverageCheck.ps1` | read-only staff-memory coverage drift report |
+| `tests/*.ps1` | standalone test harnesses; parameterised so they never touch production state |
+
+### Placeholders
+
+Every shipped script carries placeholders that **must** be substituted for the user's real paths before the script will run. A placeholder left in place is not a silent default — it is a path that does not exist.
+
+| placeholder | meaning |
+|---|---|
+| `<TOOL_DIR>` | the permanent local tool directory (Step 5a) |
+| `<WORKSPACES_ROOT>` | the root under which workspaces live |
+| `<DATA_DIR>` | the Clairvoyance user-data directory |
+| `<TOOLS_DIR>` | the shared external-tools directory, if the user has one |
+| `<YOU>` | the user's Windows account name |
+| `<PC>` | the machine name |
+
+`<DATA_DIR>` and `<TOOLS_DIR>` are new in this release; installs written against the previous version will not have them.
 
 ## Hard rules (do not violate)
 

@@ -9,11 +9,23 @@ This repository contains the **scrubbed, shareable** build materials — no inst
 | Document | Purpose |
 | -------- | ------- |
 | [docs/Build-Runbook.md](docs/Build-Runbook.md) | Step-by-step, interview-driven build guide. Your own AI (or you) authors the scripts locally from the Companion Scripts — nothing is downloaded and run blind. |
-| [docs/Companion-Scripts.md](docs/Companion-Scripts.md) | Annotated, byte-accurate source of `backup.ps1`, `restore.ps1`, and `evaluate-workspaces.ps1`, using `<TOOL_DIR>` / `<WORKSPACES_ROOT>` placeholders. **Canonical source of truth** for the scripts. |
-| [scripts/](scripts/) | The same four scripts extracted verbatim as standalone `.ps1` files (`backup.ps1`, `restore.ps1`, `evaluate-workspaces.ps1`, `backup-preflight.ps1`), for syntax highlighting and diffs. Convenience/audit copies — kept in sync with the Companion Scripts note. |
+| [docs/Companion-Scripts.md](docs/Companion-Scripts.md) | Annotated, byte-accurate source of every installable script, using placeholders for environment-specific paths. **Canonical source of truth** for the scripts — generated from `scripts/`, so the two cannot drift. |
+| [scripts/](scripts/) | The same scripts extracted verbatim as standalone `.ps1` files, for syntax highlighting and diffs. Convenience/audit copies. |
+| [tests/](tests/) | Standalone test harnesses for the health check and the staff-memory coverage check. **Not part of an install** — every path they touch is a parameter, so they never write production state. |
 | [config.example.json](config.example.json) | Annotated example `config.json` showing the exact structure, nesting, and types, with placeholder paths. Copy, substitute, and drop the `_comment*` keys. |
 
-> **Note on `scripts/`:** these files still carry the `<TOOL_DIR>` / `<WORKSPACES_ROOT>` placeholders as parameter defaults. Substitute them for your own paths (or always invoke with an explicit `-ConfigPath`) before running. The runbook's trustless flow — where your own AI authors the scripts locally — remains the recommended install path; `scripts/` is provided for convenience and auditing, not blind download-and-run.
+> **Note on `scripts/`:** these files carry placeholders (`<TOOL_DIR>`, `<WORKSPACES_ROOT>`, `<DATA_DIR>`, `<TOOLS_DIR>`, `<YOU>`, `<PC>`) as parameter defaults — see the placeholder table in [AGENTS.md](AGENTS.md). Substitute them for your own paths (or always invoke with an explicit `-ConfigPath`) before running. A placeholder left in place is not a silent default; it is a path that does not exist. The runbook's trustless flow — where your own AI authors the scripts locally — remains the recommended install path; `scripts/` is provided for convenience and auditing, not blind download-and-run.
+
+### Monitoring (new in this release)
+
+The engine now ships with its own watchdog, because a backup system that cannot tell you it stopped working is a backup system you will find out about at restore time.
+
+| script | what it answers |
+| ------ | --------------- |
+| `Invoke-BackupHealthCheck.ps1` | *Did last night's run actually happen and succeed?* Fails **closed**: age is checked before `ok` and beats it, so a stale success cannot masquerade as a fresh one. Writes a verdict line every run, so "ran and passed" is distinguishable from "never ran". |
+| `Invoke-StaffMemoryCoverageCheck.ps1` | *Is anything silently dropping out of the backup set?* Read-only; reports drift without touching `ok`. |
+
+⚠️ **Know what the health check cannot see.** Its inputs are the engine's own state files. It does **not** open the destination share and does **not** verify tier promotion — so if an archive were deleted or truncated after a successful run, it would still report healthy, *correctly*, because the run it describes did succeed. Treat it as "the engine reported success", not as "a good backup exists". Verifying the archive itself is a separate job and deliberately a separate failure domain: "I could not reach the share" is not "the backup failed", and conflating them trains you to ignore both.
 
 ## Installation
 
@@ -90,8 +102,10 @@ Open [docs/Build-Runbook.md](docs/Build-Runbook.md) and follow it top to bottom.
 **Staff: to upgrade an existing install to this version, do exactly this (attended):**
 
 1. **Do NOT re-run the installer / runbook interview.** This is a script refresh, nothing else.
-2. **Refresh only the scripts.** In the *existing* tool directory, keep `.bak` copies, then author the four scripts from this version — `backup.ps1`, `restore.ps1`, `evaluate-workspaces.ps1`, and the new `backup-preflight.ps1` — from `scripts/` (or the fenced source in `docs/Companion-Scripts.md`), substituting the same `<TOOL_DIR>` / `<WORKSPACES_ROOT>`, and **verify each parses** (`[Parser]::ParseFile`, zero errors) before replacing the live file. If the tool dir was ACL-locked at go-live, grant write temporarily and **restore the lockdown afterward**.
+2. **Refresh only the scripts.** In the *existing* tool directory, keep `.bak` copies, then author **every** script listed in the `AGENTS.md` inventory from this version — including the ones that are new here (`backup-window.ps1`, `Invoke-BackupHealthCheck.ps1`, `Invoke-StaffMemoryCoverageCheck.ps1`) — from `scripts/` (or the fenced source in `docs/Companion-Scripts.md`), substituting the placeholders, and **verify each parses** (`[Parser]::ParseFile`, zero errors) before replacing the live file. If the tool dir was ACL-locked at go-live, grant write temporarily and **restore the lockdown afterward**.
+   > `backup-window.ps1` is **dot-sourced by the others** — refresh it in the same pass, not afterwards. A half-refreshed set where the engine is new and the shared module is old fails at the dot-source, which is loud, but the reverse (old engine, new module) is the quiet one.
 3. **Do NOT touch** `.secretkey` (the sealed passphrase), `config.json`, `backup_state.json`, or the scheduled task. Leave the passphrase and task exactly as they are — the new code does not require re-sealing or re-registering.
+   > **Two exceptions worth knowing about, both opt-in.** The staff-memory coverage check and the scan-delta assert read config keys that your existing `config.json` does not have. Both are **inert when the keys are absent** — the coverage check simply does not run, and the delta assert falls back to built-in defaults — so doing nothing is a valid choice. If you do enable the coverage check, set `staffMemoryProjectsRoot` **and** `staffMemoryIgnore` together; setting only the first makes every unconfigured directory read as drift and pins `ok=false` from the first run onward.
 4. **Backfill the install manifest once.** Write `<TOOL_DIR>\.backup-install.json` for the first time (atomically — see Runbook Step 12) recording the *existing* install: `version` = this version, `components` all `true`, and `sealFingerprint` from the current sealed key. This gives future preflights a version stamp so subsequent upgrades use the ordinary `§Update` path.
 5. **Confirm with the probe.** Run `backup-preflight.ps1 -ToolDir <TOOL_DIR>` and confirm it reports **COMPLETE**. Then run one supervised `backup.ps1 -RunDate <today>` and confirm `last-run.json` shows `ok=true`.
 

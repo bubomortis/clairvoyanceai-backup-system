@@ -27,6 +27,21 @@
   "deepVerifySample": 6,
   "_comment_deepVerifySample": "How many random files to extract FROM the destination archive and hash-check after upload.",
   "secretScanMaxFileKB": 1024,
+  "_comment_secretScanMaxFileKB": "Files larger than this are NOT scanned and therefore NOT scrubbed; the run still reports ok=true. This is a deliberate cost cap, not a guarantee — 'no secrets found' and 'nothing was examined' produce the same green. The scan-counts ledger below exists precisely so that the size of this blind spot is visible instead of implied.",
+
+  "secretScanDelta": {
+    "maxCoverageDropPP": 1.5,
+    "maxCoverageBelowAnchorPP": 3.0,
+    "anchorWindow": 7,
+    "maxSkipBinJump": 300,
+    "maxSkipBigJump": 25,
+    "maxSkipRead": 25,
+    "maxSkipMissingJump": 25,
+    "maxTotalSkipGrowth": 250,
+    "maxScanLagOnShrink": 50
+  },
+  "_comment_secretScanDelta": "Coverage-drift assert over 'secret-scan-counts.jsonl' (written next to lastRunFile, one line per run). Two checks: a per-run DELTA against the previous Live run, and a LEVEL check against the best coverage in the last anchorWindow Live runs — the level check is what makes a slow night-by-night ratchet downward impossible. Verdict is WARN-only and never sets ok=false. OMIT THIS KEY ENTIRELY to accept the built-in defaults, which are exactly the values shown here.",
+  "_comment_secretScanDelta_provisional": "THESE DEFAULTS ARE PROVISIONAL, NOT EMPIRICAL. They were sized on the origin system from three nightly rows plus one read-only baseline, and the code says so at the point of definition. They are a starting point for YOUR churn, not a tuned recommendation: expect to widen them if your first weeks produce WARNs on ordinary activity, and to narrow them once you have real variance data. A band nobody has calibrated is a band that trains you to ignore it.",
 
   "secretsCredentialName": "BACKUP_SECRETS_PASSPHRASE",
   "_comment_secretsCredentialName": "Fallback: name of an environment variable holding the AES passphrase if the DPAPI passphraseFile is absent. The DPAPI-sealed passphraseFile is the primary mechanism (Step 7).",
@@ -38,6 +53,14 @@
     "home-appdata/.Clairvoyance/staff/*"
   ],
   "_comment_protectedPaths": "Staff-continuity assertion. Each glob (PowerShell -like, case-insensitive; '*' spans any characters including '/') is matched against '<source>/<rel>' of the combined manifest; each must have >=1 file in the archive, else the run logs a FAIL stage and sets ok=false (loud, but does NOT abort — you still get that night's backup). This guards the Staff-member files (definition profiles/staff.json, history agent-sessions.json, custom personas, and the Home workspace's .Clairvoyance/staff memory) against being silently dropped by a future exclude. Per-workspace staff memory is reported (not required) since not every workspace has it; add 'workspace-<Name>/.Clairvoyance/staff/*' to hard-require a specific workspace. Omit this key entirely to disable the check.",
+
+  "staffMemoryProjectsRoot": "C:\\Users\\<YOU>\\.claude\\projects",
+  "staffMemoryIgnore": [ "C--Users-<YOU>-AppData-Roaming-clairvoyance", "C--Users-<YOU>" ],
+  "_comment_staffMemory": "F17 staff-memory coverage drift. staffMemoryProjectsRoot is where per-workspace agent memory directories live; the run asserts the configured staff-memory sources still match what is actually on disk, in BOTH directions, and sets ok=false on drift (which under the promotion guard withholds Weekly/Monthly/Annual). staffMemoryIgnore lists derived directory slugs that are deliberately NOT backed up.",
+  "_comment_staffMemory_coupled": "THESE TWO KEYS ACTIVATE TOGETHER OR NOT AT ALL. Setting staffMemoryProjectsRoot without staffMemoryIgnore is destructive in a quiet way: any unconfigured directory under the root reads as drift, so the check fires ok=false on run one and every run after, and a permanently-failing check is one nobody reads. Omit BOTH keys to disable, or set BOTH. The read-only scripts/Invoke-StaffMemoryCoverageCheck.ps1 reports the same comparison WITHOUT touching ok, and is the safe way to see what would fire before you enable this.",
+
+  "clairvoyanceExePath": "C:\\Program Files\\Clairvoyance\\Clairvoyance.exe",
+  "_comment_clairvoyanceExePath": "App-version source for the backup version-stamp and the restore-time mismatch warning. Read as file metadata (FileVersion, then ProductVersion) at backup time into BACKUP-META.json and compared at restore time. Point this at the INSTALL directory deliberately: it is independent of wherever the user-data base directory lives, so relocating your data does not invalidate the stamp. If unresolvable, backups stamp 'unknown' and WARN — they never abort on it.",
 
   "retention": { "daily": 7, "weekly": 12, "monthly": 12, "annual": -1, "artifacts": -1 },
   "_comment_retention": "How many of each tier to keep. -1 = keep all. Weekly slot = lastDayOfWeek; monthly = month-end; annual = year-end.",
