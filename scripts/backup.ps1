@@ -288,7 +288,7 @@ function Write-BackupLogNote {
   $shareFile = Join-Path $shareLogsDir (Split-Path $localPath -Leaf)
   Copy-Item -LiteralPath $localPath -Destination $shareFile -Force
   if(-not (Test-Path -LiteralPath $shareFile)){ throw "share copy reported success but the file is not there: $shareFile" }
-  # A collapsed UNC ('\\server\...' -> 'E:\tower\...') writes SUCCESSFULLY to the wrong disk and is
+  # A collapsed UNC ('\\server\...' -> 'E:\server\...') writes SUCCESSFULLY to the wrong disk and is
   # invisible in every other check. FullName is the only thing that catches it.
   $fn = (Get-Item -LiteralPath $shareFile).FullName
   if(-not $fn.StartsWith('\\')){ throw "UNC collapsed -- wrote to a LOCAL path instead of the share: $fn" }
