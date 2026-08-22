@@ -7,6 +7,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+
+- **`tests/Test-PreflightScriptInventory.ps1` can no longer report green without its discrimination control.** The control — which proves the *previous* probe wrongly passes the fixture the current one rejects — was gated behind an optional parameter, so the default invocation printed `11 passed, 0 failed` with the only test that proves anything silently skipped. That is the same defect the suite exists to catch, reproduced inside the suite: an instrument reporting fine while the thing it measures is absent. The old probe is now derived from git (`v0.2.0`, addressed by tag rather than commit SHA, because the 2026-08-22 history rewrite invalidated every prior SHA), and **failure to obtain it fails the suite instead of shrinking it**.
+
 ## [0.3.0] - 2026-08-22
 
 ### Added

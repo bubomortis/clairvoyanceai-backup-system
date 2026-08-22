@@ -20,7 +20,12 @@
 [CmdletBinding()]
 param(
   [string]$Preflight    = '',
-  [string]$OldPreflight = ''   # optional: a pre-fix copy, for the discrimination control (case F)
+  # Escape hatch for running outside a git checkout. Leave EMPTY for normal use: the control
+  # then derives the old probe from $OldRef and FAILS if it cannot, rather than skipping.
+  [string]$OldPreflight = '',
+  # Last release whose preflight still hardcoded the three-script list. A tag, not a SHA --
+  # the 2026-08-22 history rewrite killed every pre-existing SHA and left tag names intact.
+  [string]$OldRef       = 'v0.2.0'
 )
 $ErrorActionPreference = 'Stop'
 
@@ -97,14 +102,43 @@ try { $r = Get-ScriptsComponent $Preflight $d
 
 # F. DISCRIMINATION CONTROL. The previous probe must WRONGLY PASS fixture C. If it also fails,
 #    then C was never the defect and this suite is testing something else.
+#
+#    THIS CONTROL MUST NOT BE SKIPPABLE. It was originally gated behind an optional
+#    -OldPreflight parameter, so the DEFAULT invocation reported "11 passed, 0 failed" with the
+#    only test that proves anything silently absent. That is the same defect this whole file
+#    exists to close -- an instrument reporting fine while the thing it measures is missing --
+#    reproduced inside the instrument. The old probe is now derived from git, and being unable
+#    to obtain it FAILS the suite rather than shrinking it.
+#
+#    Addressed by TAG, not by commit SHA: the published history of this repo was rewritten on
+#    2026-08-22 and every SHA from before that date is dead. Tag names survived; SHAs did not.
+if (-not $OldPreflight) {
+  $ref = "$OldRef`:scripts/backup-preflight.ps1"
+  $tmpOld = Join-Path ([System.IO.Path]::GetTempPath()) ("old-preflight-" + [guid]::NewGuid().ToString('N') + ".ps1")
+  $repoRoot = Split-Path -Parent $PSScriptRoot
+  # EA=Continue around the native call: under 'Stop', `& git ... 2>&1` turns git's FIRST
+  # stderr line into a thrown ErrorRecord, so the $LASTEXITCODE check below is unreachable
+  # and a missing ref surfaces as a stack trace instead of a clean FAIL.
+  $prevEAP = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try   { $blob = & git -C $repoRoot show $ref 2>&1; $gitCode = $LASTEXITCODE }
+  finally { $ErrorActionPreference = $prevEAP }
+  if ($gitCode -eq 0 -and $blob) {
+    Set-Content -LiteralPath $tmpOld -Value ($blob -join "`n") -Encoding UTF8
+    $OldPreflight = $tmpOld
+  } else {
+    Check 'F discrimination control obtainable' $false "could not read '$ref' from $repoRoot -- pass -OldPreflight explicitly if running outside a git checkout. git said: $blob"
+  }
+}
+
 if ($OldPreflight -and (Test-Path -LiteralPath $OldPreflight)) {
   $d = New-Fixture ($core + @('Invoke-BackupHealthCheck.ps1'))
   try { $r = Get-ScriptsComponent $OldPreflight $d
     Check 'F OLD probe wrongly passes fixture C' ($r.present -eq $true) "old probe said: $($r.detail)"
-  } finally { Remove-Item $d -Recurse -Force }
-} else {
-  Write-Host "  SKIP  F discrimination control -- pass -OldPreflight <pre-fix copy> to run it"
-  Write-Host "        A suite without it shows only that the new code agrees with itself."
+  } finally {
+    Remove-Item $d -Recurse -Force
+    if ($tmpOld) { Remove-Item -LiteralPath $tmpOld -Force -ErrorAction SilentlyContinue }
+  }
 }
 
 Write-Host ""
