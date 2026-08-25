@@ -158,16 +158,13 @@ if($Mode -eq "InPlace"){
           $rest       = @($hit | Where-Object { $secretHit -notcontains $_ })
           $shown      = @($secretHit) + @($rest | Select-Object -First 12)
           if($rest.Count -gt 12){ $shown += ("... and {0} more" -f ($rest.Count-12)) }
-          # A5/J1 -- BLOCKING FIX. This branch used to end "it authorizes nothing today", which is a
+          # RULE: describe the GRANT; use enumeration only as illustration, never as evidence of
+          # narrowness. NEVER SAY "NOTHING" ABOUT A PATTERN THAT STILL MATCHES ANYTHING -- that is a
           # claim about the DIRECTORY masquerading as a claim about the GRANT. Test-SafeTarget never
           # touches the filesystem: existence is not a precondition for authorization, and InPlace
-          # CREATES the targets the manifest names. So an empty root with glob '*' authorized
-          # auth-storage.json while this line said it authorized nothing -- a REGRESSION against the
-          # version before it, which warned correctly. It was worst in the bare-metal DR this
-          # enumeration was written to serve: root present (an earlier source or New-Item made it)
-          # but not yet populated, which is precisely when someone reads this line.
-          # RULE: describe the GRANT; use enumeration only as illustration, never as evidence of
-          # narrowness. Never say "nothing" about a pattern that still matches anything.
+          # CREATES the targets the manifest names, so an empty root with glob '*' still authorizes
+          # everything. It bites hardest in a bare-metal DR -- root present but not yet populated --
+          # which is exactly when someone reads this line.
           $lvl = if($secretHit.Count){ 'WARN ' } else { '' }
           if($hit.Count){ Say "config" "$($lvl)source '$($s.name)' includeFiles [$($g -join ', ')] authorizes ANY top-level file matching those patterns under '$($s.path)' for InPlace restore -- $($hit.Count) of $($encl.Count) present now: $($shown -join ', ')$(if($secretHit.Count){ " <-- $($secretHit.Count) of these are in secretsSet" })" }
           else { Say "config" "source '$($s.name)' includeFiles [$($g -join ', ')] authorizes ANY top-level file matching those patterns under '$($s.path)' -- 0 of $($encl.Count) present now, so this list is NOT evidence of narrowness" }

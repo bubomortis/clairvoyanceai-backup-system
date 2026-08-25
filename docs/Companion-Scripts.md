@@ -313,30 +313,23 @@ $seven = $cfg.sevenZip
 #
 #   ANYTHING RUNNING ELEVATED RESOLVES ITS BINARIES BY ABSOLUTE PATH, NEVER BY PATH.
 #
-# This script's scheduled task runs as SYSTEM (verified: schtasks 'Run As User: SYSTEM').
-# A bare `& toolname` in this file is resolved through the PATH of an elevated process. If any
-# directory on that PATH is writable by a non-administrator, planting a binary of that name is
-# arbitrary code execution as SYSTEM, on a timer, every night.
+# This script's scheduled task runs as SYSTEM. A bare `& toolname` is resolved through the PATH of
+# an elevated process; if any directory on that PATH is writable by a non-administrator, planting a
+# binary of that name is arbitrary code execution as SYSTEM, on a timer, every night.
 #
-# That is not hypothetical here. <CLV_ROOT> inherits `Authenticated Users: Modify` from the
-# E:\ root, so any shared tools directory created under it is user-writable by default. The
-# proposal to put such a directory on the MACHINE PATH is what turned this from latent to live.
-#
-# This rule previously existed only as the comment on the $robocopy line below -- pinned at ONE
-# call site instead of stated as a rule -- which is exactly why it did not protect the two bare
-# `& rclone` / `& ollama` calls in Write-Recovery. Those are now gone.
+# Not hypothetical here: <CLV_ROOT> inherits `Authenticated Users: Modify` from the E:\ root,
+# so any shared tools directory under it is user-writable by default.
 #
 # IF YOU ADD AN EXTERNAL COMMAND: bind it to an absolute path near the top of this file, or take
 # the value from config.json. Do not add a bare name.
 #
-# -- COROLLARY (added 2026-07-26, adversarial review): EXECUTION vs INGESTION are different rules. --
+# -- COROLLARY: EXECUTION vs INGESTION are different rules. --
 #
-# The rule above governs what this script RUNS. It does not govern what this script READS, and an
-# earlier version of this very comment said "or read the value from ... the tools manifest" --
-# which, followed literally by a future author, restores the escalation by a different route:
-# read a PATH out of the manifest, then execute it. The manifest is NOT a trusted source.
-# `<TOOLS_DIR>` carries `Authenticated Users:(I)(M)` (inherited), so tools-manifest.json
-# is a USER-WRITABLE FILE being read by a process running as SYSTEM.
+# The rule above governs what this script RUNS. It does not govern what this script READS.
+# DO NOT relax it to "or read the value from the tools manifest": that restores the escalation by
+# another route -- read a PATH out of the manifest, then execute it. The manifest is NOT a trusted
+# source. `<TOOLS_DIR>` carries `Authenticated Users:(I)(M)` (inherited), so
+# tools-manifest.json is a USER-WRITABLE FILE being read by a process running as SYSTEM.
 #
 #   DESCRIPTIVE data from the manifest, used only for DISPLAY, is fine.
 #     -> version strings, paths and notes $L.Add()ed into RECOVERY.md text. This is what
@@ -353,14 +346,11 @@ $seven = $cfg.sevenZip
 #
 # TEST TO APPLY -- ask what a plausible READER WOULD DO, not whether the process executes it.
 #
-#   An earlier version of this comment said "changing text in a recovery document is a nuisance."
-#   THAT WAS FALSE, and it was the permissive half of the rule: a future author applying it
-#   faithfully would have concluded the injection below was acceptable. RECOVERY.md is read by a
-#   human under pressure, mid-restore, when they are disposed to follow instructions rather than
-#   audit them. A CR/LF in any manifest string field let an attacker author ARBITRARY ADDITIONAL
-#   LINES -- a fabricated "## STEP 7 - MANDATORY BEFORE RESTORE" heading with a plausible
-#   irm|iex command, placed directly above the real Rebuild line. It does not need to execute.
-#   It needs to be BELIEVED. (Found by adversarial review 2026-07-26 with a working PoC; the defect was live.)
+#   DO NOT WEAKEN THIS TO "display-only text is a nuisance." That phrasing was in an earlier
+#   version of this comment, it was FALSE, and it is the permissive half of the rule: applied
+#   faithfully it licenses the injection this defence exists to stop. Injected text does not need
+#   to execute. It needs to be BELIEVED, by a human mid-restore who is disposed to follow
+#   instructions rather than audit them. Threat model and the working PoC: SECURITY.md.
 #
 # NOTE ON THE OBVIOUS-LOOKING FIX: do NOT "solve" this by hardening <TOOLS_DIR>. That
 # directory holds the app-generated MCP launchers (the app runs in USER context) AND is the write
@@ -375,85 +365,30 @@ $toolDir = Split-Path -Parent $ConfigPath   # for _Restore self-containment (scr
 $logStages = @()
 $script:pass = $null
 # ---- backup-window LEASE (2026-07-27) ----
-# The pause flag is a LEASE, not a bare marker, and readers MUST honour expiry.
+# The pause flag is a LEASE, not a bare marker, and readers MUST honour expiry. A reader treats an
+# expired lease as ABSENT and NEVER deletes the file; only this script's own `finally` removes it.
+# That is what removes the "is the owner still alive?" janitor role -- and a janitor deciding that
+# question is what cleared this flag ON A LIVE BACKUP once. Do not reintroduce one.
 #
-# WHY: the `finally` that clears this flag DOES NOT RUN when the process is killed -- reboot,
-# TerminateProcess, hard power loss. That is not theoretical: the flag was stranded on 2026-07-23,
-# and again on 2026-07-27 when the run was hard-killed mid-compress by the scheduled task's
-# ExecutionTimeLimit (then PT40M). A bare marker therefore silences the whole automation fleet
-# INDEFINITELY after any hard kill.
-# And the obvious fix for that -- a janitor deciding whether the owner is still alive -- is exactly
-# what cleared the flag ON A LIVE BACKUP on 2026-07-27, while 7-Zip was still compressing.
-# An expiring lease deletes the janitor ROLE: a reader treats an expired lease as absent and NEVER
-# removes the file. Only this script's own `finally` deletes it. Nobody has to guess at liveness.
+# TTL IS 120 MINUTES, and it is sized against the longest plausible RUN -- never against the
+# longest gap between Log calls.
 #
-# TTL SIZING -- size against the longest plausible RUN, NOT the longest gap between Log calls.
-# (B2, corrected 2026-07-27 after adversarial review; the first version of this comment reasoned from the gap
-# and picked 45. That was wrong twice over and both errors are worth recording.)
-#
-#   1. RIGHT-CENSORED EVIDENCE. The 45 was justified by "compress ran 03:31 -> past 04:00 on
-#      07-27", i.e. a ~29 min gap. BOTH HALVES OF THAT WERE WRONG, and the second only surfaced
-#      after the root cause was corrected. The run was hard-killed at ~03:40 by the task's
-#      ExecutionTimeLimit (PT40M at the time), NOT by the 04:00 host reboot -- last write 03:39 =
-#      start + 40 min, and an attended run the same day died at exactly 40 min with no reboot
-#      involved. So compress was never running past 04:00: the real gap was nearer 9 min, and the
-#      "29" was an inference FROM the wrong cause, not a measurement. DO NOT re-quote it.
-#      The lesson survives its own bad number: sizing a margin from a censored observation
-#      understates it by an unknown amount. A superseded root cause leaves its inferences behind,
-#      and those are what get quoted later as fact.
-#   2. WRONG LONG POLE. Measured from the last COMPLETE run (07-26, 18.4 min), the largest gap is
-#      secrets-split -> secret-scrub at 12.07 min -- 65% of the whole nominal run inside one
-#      un-renewed interval -- not compress, which the old comment reasoned about.
-#      (The old "3.3x contention factor" is struck for the same reason: it compared a killed run
-#      against a completed one, so it is a LOWER BOUND of ~2.2x with the true value unknown.)
-#      SUPERSEDING DIRECT OBSERVATION: the attended run on 2026-07-27 was watched live via the
-#      lease `stage` field and showed stages of 19-28 min -- secrets-split alone sat 19 min with
-#      no intervening Log call and was still climbing. That is measurement, not inference, and it
-#      is what justifies 120 on its own.
-#
-# Why a too-short TTL is not merely "a bit risky": the failure is SELF-AMPLIFYING and has no
-# in-run recovery. Lease expires mid-run -> fleet resumes -> contention rises -> the current stage
-# slows -> the gap to the next renewal grows -> the lease stays expired for the rest of the run.
-# One breach converts into "the fleet runs on top of the backup until it finishes", which is the
-# original bug plus everyone believing the control works.
+# DO NOT SHORTEN IT. A too-short TTL fails SELF-AMPLIFYINGLY and has no in-run recovery: the lease
+# expires mid-run -> the fleet resumes -> contention rises -> the current stage slows -> the gap to
+# the next renewal grows -> the lease stays expired for the rest of the run. One breach becomes
+# "the fleet runs on top of the backup until it finishes", plus everyone believing the control works.
 #
 # The costs are wildly asymmetric, so do NOT split the difference:
-#   too long  -> quiet for TTL after a hard kill. Bounded, self-healing, no human action, and at
-#                most a couple of skipped ticks against 60-minute and 2-hour periods.
+#   too long  -> quiet for one TTL after a hard kill. Bounded, self-healing, no human action.
 #   too short -> the incident this was built to prevent, with positive feedback.
 #
-# THE NUMBER: 120 min, justified by DIRECT OBSERVATION -- roughly 10x the measured nominal worst
-# gap (12.07 min on the last complete run) and >4x the longest gap ever actually watched live
-# (19-28 min stages, attended run 2026-07-27, observed via the lease `stage` field). Earlier drafts
-# justified it against a "3.3x contended projection"; that factor is withdrawn as an artefact of the
-# wrong root cause -- see the note above. A clean finish always clears the lease in the `finally`,
-# so the only cost of being generous is post-kill quiet time.
+# The knob is CLAMPED to 30-240 deliberately: unclamped, a fat-fingered 4500 would quiesce the
+# fleet for three days and look like a healthy lease the whole time. DryRun never writes the lease
+# -- a dry run must not be able to quiesce production.
 #
-# DO NOT restore the earlier justification, which read "the 03:00-start / 05:00-reboot window
-# physically caps a run at 120 min". That bound is NOT verifiable from inside this guest, and a
-# reviewer correctly challenged it after finding no such scheduled task. The nuance is that the
-# reboot IS scheduled -- just not here: it is driven by `qemu-ga` on behalf of the hypervisor
-# (System event 1074, fired at 04:00:0x for 14 consecutive days, which is not Windows Update), so
-# `Get-ScheduledTask` in the guest cannot see it BY CONSTRUCTION and its absence there proves
-# nothing either way. Either way the conclusion stands: resting a safety margin on a bound this
-# process cannot observe is the same error class as the censored 29 above -- an inferred limit
-# standing in for a measured one. Rest it on the gap margin, which is evidence we hold.
-#
-# FOOTNOTE (2026-07-27, later the same day): the reviewer's challenge above turned out to be even
-# more right than either of us knew. The binding ceiling was never the reboot at all -- it was the
-# scheduled task's own ExecutionTimeLimit, PT40M, set at go-live 2026-07-12 and referenced in no
-# config, script or runbook. It has since been raised to PT2H, which is why 120 here and the task
-# limit now agree rather than contradicting. See _note_overrun_guards in config.json: there are
-# THREE overrun guards in three different places, and only one of them lives in this codebase.
-#
-# COROLLARY, and the reason not to go higher than 120: a hard kill can land at any time (task
-# limit or host reboot), so the post-kill quiet window should stay short enough to self-heal
-# within a couple of
-# orchestrator ticks (60-minute and 2-hour periods).
-#
-# The knob is CLAMPED. Unclamped, a fat-fingered 4500 would quiesce the fleet for three days and
-# look like a healthy lease the entire time -- a config typo should not be able to outrun a human.
-# DryRun never writes the lease -- a dry run must not be able to quiesce production.
+# Note there are THREE overrun guards in three different places and only one lives in this
+# codebase; see _note_overrun_guards in config.json. Derivation of the 120, the superseded
+# numbers, and why two earlier justifications were withdrawn: docs/Design-History.md.
 $script:leaseStartedAt = (Get-Date).ToString("o")
 $script:leaseReleased = $false
 $script:leaseTtlMin = 120
@@ -507,16 +442,11 @@ function Log($stage,$status,$detail){ $script:logStages += [pscustomobject]@{ ts
 # archives, for the same reason _Restore carries its four scripts. "Retire the mirror and rely on the
 # local note plus docs/reports" fails that test -- both of those die with the machine.
 #
-# WHY THE MONITOR COULD NOT DO IT: the monitor drives PowerShell through a bash/MSYS argument layer
-# that eats '\\', so every UNC write collapsed -- Copy-Item, cmd /c copy and robocopy failed
-# IDENTICALLY, which is why "switch tools" never helped. backup.ps1 has no such layer and already
-# writes this exact share every night (it uploads ~400MB of archives to it). The capability was never
-# missing; the OWNER was, and an owner that punts on failure is not an owner.
-#
 # WHY DIRECTION CAN NO LONGER INVERT: local is written first, then copied to the share, then
-# hash-compared. One writer, one direction, every run. The 8-day divergence (share stale to 07-31,
-# then local stale from 07-30) happened because two actors wrote two copies with no defined
-# authority. That is structurally impossible while this is the only writer.
+# hash-compared. ONE WRITER, ONE DIRECTION, EVERY RUN. Two actors writing two copies with no defined
+# authority is what produced an 8-day divergence; that is structurally impossible while this is the
+# only writer. Do not add a second writer, and do not let the monitor own this again.
+# (Why the monitor could not own it, and the divergence itself: docs/Design-History.md.)
 #
 # WHY THIS DOES NOT SET ok=false: as of F15, ok=false WITHHOLDS tier promotion. A markdown note that
 # failed to copy is a REPORTING failure, not an archive-integrity failure, and must not cost a
@@ -866,27 +796,23 @@ function SevenZipPw([string]$pw,[string[]]$z){ $pw | & $seven @z; return $LASTEX
 # it excludes the directory whatever kind of reparse point it is, so correctness no longer rests on an
 # untested robocopy semantic. /XJD stays as defence in depth.
 #
-# CLASSIFICATION -- four cases, not two. The 2026-08-15 version collapsed these into "self-referential vs
-# outbound" and told the operator "nothing is lost" for anything self-referential. That was FALSE on the
-# ancestor branch (adversarial review, BLOCKER #1): if the target CONTAINS the source root, the source is inside the
-# target, not the reverse, and most of the target is not covered here at all. A definitive "nothing is
-# lost" over genuinely unbacked content is precisely the lying-verdict failure this file argues against
-# everywhere else (see B2 at mirror-prune and the secrets-zero postmortem). Silence would beat that
-# message; being right beats both.
+# CLASSIFICATION -- FOUR CASES, NOT TWO. Do not collapse these into "self-referential vs outbound"
+# and do not tell the operator "nothing is lost" for anything self-referential: that is FALSE on the
+# ANCESTOR branch, where the source is inside the target and most of the target is not covered here
+# at all. A definitive "nothing is lost" over genuinely unbacked content is the lying-verdict
+# failure this file argues against everywhere else. Silence would beat that message; being right
+# beats both.
 #   SELF     target IS the source root -- the excluded content is this source. Nothing is lost.
 #   INSIDE   target is strictly below the root -- covered ONLY if that subtree is really mirrored, so it
 #            is NOT claimed when the path sits under an exclusion.
 #   ANCESTOR target contains the root -- the source is inside the target. Most of it is NOT covered here.
 #   OUTBOUND target is unrelated -- not copied at all; a coverage hole unless another source covers it.
 #
-# NOT depth-bounded. The 2026-08-15 version capped this at depth 4 to avoid "paying the full enumeration
-# cost twice per source". adversarial review measured that cost: 1.9s bounded vs 4.2s unbounded across all 14 sources,
-# i.e. +2.3s per nightly, against a 60-minute ceiling -- 0.07% of the margin, three orders of magnitude
-# smaller than the thing it protects. The trade did not exist. The bound was also not harmless: it MISSED
-# a live junction at depth 6 under workspace-ExampleMediaPipeline (scratch\tmp\s13\...\link), on a
-# mirrored path, which /XJD dropped and this function said nothing about -- the exact silent skip it
-# exists to prevent. Get-ChildItem -Recurse does not descend into reparse points (verified on
-# PS 5.1.22621.6133 with a positive control), which is what makes an unbounded walk safe here.
+# DO NOT DEPTH-BOUND THIS WALK. An earlier depth cap was measured at +2.3s per nightly against a
+# 60-minute ceiling -- 0.07% of the margin -- so the cost it was avoiding did not exist, and it
+# MISSED a live junction at depth 6 on a mirrored path that /XJD also dropped: the exact silent skip
+# this function exists to prevent. Get-ChildItem -Recurse does not descend into reparse points
+# (verified with a positive control), which is what makes an unbounded walk safe here.
 function Report-Junctions($src){
   $found = New-Object System.Collections.Generic.List[string]
   $inc = Get-IncludeGlobs $src
@@ -1114,12 +1040,11 @@ function Assert-StaffMemoryCoverage(){
 # still reports ok=true and every stage PASS, because nothing today compares one night to the
 # next. `scanned` falling while `total` holds is the signal.
 #
-# WHY THE TOLERANCES LOOK LOOSE -- measured, not guessed. Coverage drifts DOWNWARD on its own
-# as binaries accumulate: skipBin ran 435 -> 464 -> 521 over 08-11..08-13, and delta-scanned trailed
-# delta-total by 29 then 57 files on those same nights. A tight ratio assert would fire on ordinary
-# churn within a week and get muted, which is worse than no assert. So the ratio band is wide
-# and the real detection weight sits on the PER-BUCKET jumps, which is where a reader
-# regression actually shows up (misread -> skipRead, misclassified -> skipBin).
+# WHY THE TOLERANCES LOOK LOOSE -- measured, not guessed. Coverage drifts DOWNWARD on its own as
+# binaries accumulate, so a tight ratio assert would fire on ordinary churn within a week and get
+# muted, which is worse than no assert. DO NOT TIGHTEN THE RATIO BAND: the real detection weight
+# sits on the PER-BUCKET jumps, which is where a reader regression actually shows up
+# (misread -> skipRead, misclassified -> skipBin). Supporting measurements: docs/Design-History.md.
 #
 # VERDICT IS WARN-ONLY, per the maintainer's 2026-08-13 call, and there is deliberately NO auto-escalation
 # on a date: a behaviour change that arrives by calendar is a surprise nobody consented to at the
@@ -1195,16 +1120,14 @@ function Assert-ScanDelta($cur,$ledger){
   # would otherwise be ignored in favour of an older one.
   $base  = @($lines | Where-Object { [string]$_.mode -eq 'ReadOnlyBaseline' } | Sort-Object { LedgerTs $_ }) | Select-Object -Last 1
 
-  # ---- THE ANCHOR. This is the fix for the two blocking findings in adversarial review's 2026-08-14 review.
-  # Comparing only against the PREVIOUS Live line makes this a first-derivative alarm with nothing
-  # holding the level: (a) the FIRST Live line silently becomes the reference, so a rewrite landing
-  # before it is baked in and undetectable at any threshold; (b) thereafter each night is graded
-  # against the last, so an absorbed regression is promoted to the new pass mark permanently.
-  # Anchoring on the BEST coverage in a trailing window fixes both, and the ReadOnlyBaseline SEEDS it
-  # so the very first Live run is graded rather than merely recorded. The baseline is a replica of the
-  # scan path, not the shipped function -- but it measured 97.04% against three Live nights at
-  # 97.40/97.36/97.09, i.e. within 0.05pp, so it is empirically an excellent level anchor even though
-  # it must never be used for a per-night DELTA.
+  # ---- THE ANCHOR. DO NOT REDUCE THIS TO A COMPARISON AGAINST THE PREVIOUS LIVE LINE. That makes
+  # it a first-derivative alarm with nothing holding the level: (a) the FIRST Live line silently
+  # becomes the reference, so a regression landing before it is baked in and undetectable at any
+  # threshold; (b) thereafter each night is graded against the last, so an absorbed regression is
+  # promoted to the new pass mark permanently. Anchoring on the BEST coverage in a trailing window
+  # fixes both, and the ReadOnlyBaseline SEEDS it so the very first Live run is graded rather than
+  # merely recorded. The baseline is a replica of the scan path, not the shipped function: it is an
+  # excellent LEVEL anchor and must never be used for a per-night DELTA.
   # RESIDUAL, STATED SO IT IS NOT DISCOVERED LATER: the window is ROLLING, so a regression that is
   # WARNed and then ignored for $tWindow consecutive Live runs eventually ages out of the anchor and
   # becomes the new normal. That is deliberate, not an oversight -- pinning the anchor to the
@@ -1216,7 +1139,7 @@ function Assert-ScanDelta($cur,$ledger){
   # baseline (an elseif) discards the seed the moment ONE Live line exists -- so a regression present
   # from the very first Live run becomes its own anchor on run 2, and the ratchet reopens after ONE
   # night rather than the $tWindow the rolling window implies. The window has no good night in it yet.
-  # max(window, seed) while the window is still filling. (adversarial review round-2 review, finding 1, BLOCKING.)
+  # max(window, seed) while the window is still filling.
   $window = @($live) | Select-Object -Last $tWindow
   $cands  = @($window)
   if($base -and @($live).Count -lt $tWindow){ $cands += $base }
@@ -1582,17 +1505,16 @@ function Upload-Verify($srcFile,$destDir){
 # corollary at the top of this file for the full reasoning and the PoC.
 # APPLIED AT EACH DISPLAY SITE, not at ingestion. The $tools object that Write-Recovery parses
 # (Get-Content -Raw | ConvertFrom-Json) is stored RAW and is never cleaned; every render site calls
-# Clean-ManifestText on its own values inline. An earlier version of this comment claimed the
-# opposite -- ingestion-time cleaning, "which cannot be forgotten" -- corrected 2026-07-27 after a
-# adversarial review review, having asserted a property the code does not have. (Deliberately no line numbers
-# here: the stale-citation habit is the same rot as the stale claim. Grep Clean-ManifestText.)
+# Clean-ManifestText on its own values inline. Do not describe this as ingestion-time cleaning
+# "which cannot be forgotten" -- that is a property this code does not have.
+# (Deliberately no line numbers here: a stale citation is the same rot as a stale claim.
+# Grep Clean-ManifestText.)
 #
 # OBLIGATION, because the structure does NOT enforce it: every value read from the manifest -- or
 # from any other user-writable source rendered into RECOVERY.md -- MUST be passed through
 # Clean-ManifestText AT ITS USE SITE. Adding a field to the manifest and interpolating it raw
-# reintroduces the vector silently. Two residuals found exactly this way on 2026-07-27 -- the
-# Clairvoyance app-version pair, and $tmPath in the MANIFEST-MISSING branch -- are the proof that
-# "remembered by every future caller" is not a property this file has.
+# reintroduces the vector silently. Residuals have been found exactly this way after the original
+# fix, which is the proof that "remembered by every future caller" is not a property this file has.
 #
 # If you ever DO move this to ingestion-time cleaning, delete this obligation paragraph with it.
 function Clean-ManifestText($v){
@@ -1618,23 +1540,20 @@ function Write-Recovery($file){
   $L.Add("Clairvoyance app version at backup: $(Clean-ManifestText $script:appVersion) (source: $(Clean-ManifestText $script:appVersionSource)). CAUTION: restoring onto a DIFFERENT Clairvoyance version risks data/schema incompatibility -- restore.ps1 warns on mismatch (see version-check stage).")
   $L.Add("")
   $L.Add("## Archives"); $L.Add("- backup_${stamp}_main.7z - plaintext, all non-secret files; see MANIFEST.json."); $L.Add("- backup_${stamp}_secrets.7z - AES-256 (credentials + any encrypt-elected workspaces); full inventory in MANIFEST.full.json inside it; passphrase = credential '$($cfg.secretsCredentialName)' (password manager).")
-  # CONSISTENCY, not a defect fix (approved 2026-07-27): these three come from config.json, which is
-  # ACL-hardened (no Authenticated Users ACE, measured), so there is no live injection path here --
-  # unlike the tools manifest. Wrapped anyway because the codebase was cleaning ONE config-sourced
-  # value ($tmPath, in the MANIFEST-MISSING branch) while interpolating three others raw on identical
-  # reasoning. That inconsistency is ambiguity a future reviewer pays for on every pass.
+  # CONSISTENCY, not a defect fix: these three come from config.json, which is ACL-hardened, so
+  # there is no live injection path here -- unlike the tools manifest. Wrapped anyway so that every
+  # config-sourced value is treated alike; cleaning some and interpolating others on identical
+  # reasoning is ambiguity a future reviewer pays for on every pass.
   # $s.encrypt is deliberately NOT wrapped: it is a boolean selecting between two LITERALS, so the
   # rendered text is CONSTRUCTED here, never taken from the file. Constructing beats sanitising --
   # do not "fix" it by wrapping the literals.
   $L.Add(""); $L.Add("## Source -> restore target"); foreach($s in $script:effectiveSources){ $L.Add("- [$(Clean-ManifestText $s.category)] $(Clean-ManifestText $s.name) ($(if($s.encrypt){'ENCRYPTED'}else{'plain'})) -> $(Clean-ManifestText $s.path)") }
   $L.Add(""); $L.Add("## Rebuild: 1.Reinstall Clairvoyance 2.restore.ps1 -Mode InPlace (main) 3.decrypt _secrets.7z 4.re-add workspaces 5.RE-AUTH OAuth tools 6.reconstitute deps (rclone/SMB/local-AI; whisper via setup-whisper.ps1) 7.recreate the SYSTEM backup task (03:00).")
   $L.Add(""); $L.Add("## Environment snapshot")
-  # 2026-07-26: these two lines used to be `& rclone listremotes` and `& ollama list` -- BARE,
-  # PATH-RESOLVED invocations executing as SYSTEM. See the STANDING RULE at the top of this file.
-  # They were also silently useless: rclone and ollama live only on the maintainer's USER path, which
-  # SYSTEM cannot see, so both calls hit their catch and EVERY archive ever produced recorded
-  # "(n/a)" for both. Removing the PATH resolution and reading the manifest fixes the security
-  # exposure and the dead content in one move, and works regardless of what PATH is set to.
+  # These values come from the MANIFEST, never from a PATH-resolved invocation. Do not "restore"
+  # a `& rclone` / `& ollama` call here: that is the STANDING RULE violation at the top of this
+  # file, and it also does not work -- those tools live only on a USER path that SYSTEM cannot see,
+  # so the calls hit their catch and record "(n/a)" regardless of what PATH is set to.
   $tmPath = '<TOOLS_DIR>\tools-manifest.json'
   if($cfg.toolsManifest){ $tmPath = $cfg.toolsManifest }
   $tools = $null
@@ -1764,9 +1683,9 @@ try {
   New-Item -ItemType Directory -Force -Path $arcTmp | Out-Null
   $mainMan=@()
   foreach($src in $script:effectiveSources){
-    # 2026-08-15: the mirror phase previously had NO Assert-Window call at all -- the three that existed
-    # (secrets/compress/upload) all sit AFTER this loop. So an overrun inside the longest phase of the run
-    # could never reach the clean 03:45 gate and could only ever end as a hard kill: no finally, no
+    # DO NOT REMOVE THIS CALL. The other three Assert-Window calls (secrets/compress/upload) all sit
+    # AFTER this loop, so without one here an overrun inside the mirror -- the longest phase of the
+    # run -- can never reach the clean 03:45 gate and can only end as a hard kill: no finally, no
     # last-run.json, and the PREVIOUS night's ok=true left standing, which reads as success.
     # HONEST LIMIT, stated so nobody mistakes this for more than it is: this is checked BETWEEN sources,
     # so it would NOT have caught 2026-08-15, where a SINGLE robocopy ran 54 minutes without returning.
@@ -1909,13 +1828,12 @@ try {
   # next HEALTHY run still sees the boundary as unmet and emits a SUBSTITUTE for it through the existing
   # machinery below. Advancing state here would be the actual bug -- it would consume the boundary with
   # nothing archived against it.
-  # ACCURACY CORRECTION (adversarial review, 2026-08-01): withholding defers promotion for the MOST RECENT boundary
-  # only. It does NOT guarantee every boundary gets a copy. Last-DowOnOrBefore/MonthEndOnOrBefore return
-  # the LATEST boundary at or before $now, so if degradation spans two or more boundaries, the earlier
-  # ones are skipped outright -- the recovering run substitutes for the newest one and the intermediate
-  # periods end up with no copy at all. That is still preferable to promoting a degraded archive, but do
-  # not read this guard as "no tier is ever missed". Sustained degradation DOES cost retained periods,
-  # which is a reason to treat a WITHHELD stage as urgent rather than informational.
+  # DO NOT READ THIS GUARD AS "no tier is ever missed". Withholding defers promotion for the MOST
+  # RECENT boundary only: Last-DowOnOrBefore/MonthEndOnOrBefore return the LATEST boundary at or
+  # before $now, so degradation spanning two or more boundaries skips the earlier ones outright and
+  # those periods end up with no copy at all. Still preferable to promoting a degraded archive, but
+  # it makes sustained degradation cost retained periods -- treat a WITHHELD stage as urgent, not
+  # informational.
   $degraded = -not $result.ok
   if($degraded){
     $due=@(); foreach($t in $tiers){ if(-not($t.last -and ([datetime]$t.last).Date -ge $t.boundary)){ $due+=$t.name } }
@@ -2161,16 +2079,13 @@ if($Mode -eq "InPlace"){
           $rest       = @($hit | Where-Object { $secretHit -notcontains $_ })
           $shown      = @($secretHit) + @($rest | Select-Object -First 12)
           if($rest.Count -gt 12){ $shown += ("... and {0} more" -f ($rest.Count-12)) }
-          # A5/J1 -- BLOCKING FIX. This branch used to end "it authorizes nothing today", which is a
+          # RULE: describe the GRANT; use enumeration only as illustration, never as evidence of
+          # narrowness. NEVER SAY "NOTHING" ABOUT A PATTERN THAT STILL MATCHES ANYTHING -- that is a
           # claim about the DIRECTORY masquerading as a claim about the GRANT. Test-SafeTarget never
           # touches the filesystem: existence is not a precondition for authorization, and InPlace
-          # CREATES the targets the manifest names. So an empty root with glob '*' authorized
-          # auth-storage.json while this line said it authorized nothing -- a REGRESSION against the
-          # version before it, which warned correctly. It was worst in the bare-metal DR this
-          # enumeration was written to serve: root present (an earlier source or New-Item made it)
-          # but not yet populated, which is precisely when someone reads this line.
-          # RULE: describe the GRANT; use enumeration only as illustration, never as evidence of
-          # narrowness. Never say "nothing" about a pattern that still matches anything.
+          # CREATES the targets the manifest names, so an empty root with glob '*' still authorizes
+          # everything. It bites hardest in a bare-metal DR -- root present but not yet populated --
+          # which is exactly when someone reads this line.
           $lvl = if($secretHit.Count){ 'WARN ' } else { '' }
           if($hit.Count){ Say "config" "$($lvl)source '$($s.name)' includeFiles [$($g -join ', ')] authorizes ANY top-level file matching those patterns under '$($s.path)' for InPlace restore -- $($hit.Count) of $($encl.Count) present now: $($shown -join ', ')$(if($secretHit.Count){ " <-- $($secretHit.Count) of these are in secretsSet" })" }
           else { Say "config" "source '$($s.name)' includeFiles [$($g -join ', ')] authorizes ANY top-level file matching those patterns under '$($s.path)' -- 0 of $($encl.Count) present now, so this list is NOT evidence of narrowness" }
@@ -2401,22 +2316,16 @@ finally { Remove-Item -Recurse -Force -LiteralPath $work -ErrorAction SilentlyCo
 
 # TRUST BOUNDARY -- FIXED AT THE ROOT, not mitigated at the callsite.
 #
-# This module used to live in <TOOLS_DIR>, which carries `Authenticated Users: Modify`.
-# Review (adversarial review 2026-07-27) rightly called that out: a user-writable module advertising itself as
-# "the shared module for every orchestrator" is an invitation, and the boundary was documented
-# rather than enforced.
+# THIS FILE MUST LIVE IN AN ACL-HARDENED DIRECTORY, and it lives here for that reason: no
+# `Authenticated Users` ACE. A module advertising itself as "the shared module for every
+# orchestrator" while being user-writable is an invitation. Do not move it back to a user-writable
+# location and document the boundary instead of enforcing it.
 #
-# The recommended enforcement was to throw for any Administrator-role caller. I MEASURED that
-# before applying it, and it would have DISABLED THIS GATE ENTIRELY on this machine: the scheduled
-# task `Clairvoyance Elevated Autostart` runs RunLevel=Highest, so the app and every orchestrator
-# tick it dispatches are ALREADY elevated. Callers wrap this dot-source in try/catch and fail open,
-# so the throw would be swallowed and Test-BackupQuiet would simply never run again -- a control
-# that silently becomes a permanent no-op, which is the exact failure the same review flagged
-# elsewhere. A warning instead would fire on 100% of normal runs and train everyone to ignore it.
-#
-# So the file MOVED here, to <TOOL_DIR>, which is ACL-hardened (verified:
-# SYSTEM / Administrators / <PC>\<YOU> only -- NO Authenticated Users ACE). The module
-# is no longer user-writable, so the finding is closed rather than warned about.
+# DO NOT "enforce" this by throwing for Administrator-role callers. That was measured and would
+# DISABLE THIS GATE ENTIRELY here: orchestrator ticks already run elevated, callers wrap the
+# dot-source in try/catch and fail open, so the throw is swallowed and Test-BackupQuiet simply
+# never runs again -- a control that silently becomes a permanent no-op. A warning instead fires on
+# 100% of normal runs and trains everyone to ignore it.
 #
 # It also buys a property worth keeping: the module and the lease it reads now SHARE FATE. Any
 # identity that cannot read this file cannot read the lease either, so there is no configuration

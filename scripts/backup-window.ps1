@@ -15,22 +15,16 @@
 
 # TRUST BOUNDARY -- FIXED AT THE ROOT, not mitigated at the callsite.
 #
-# This module used to live in <TOOLS_DIR>, which carries `Authenticated Users: Modify`.
-# Review (adversarial review 2026-07-27) rightly called that out: a user-writable module advertising itself as
-# "the shared module for every orchestrator" is an invitation, and the boundary was documented
-# rather than enforced.
+# THIS FILE MUST LIVE IN AN ACL-HARDENED DIRECTORY, and it lives here for that reason: no
+# `Authenticated Users` ACE. A module advertising itself as "the shared module for every
+# orchestrator" while being user-writable is an invitation. Do not move it back to a user-writable
+# location and document the boundary instead of enforcing it.
 #
-# The recommended enforcement was to throw for any Administrator-role caller. I MEASURED that
-# before applying it, and it would have DISABLED THIS GATE ENTIRELY on this machine: the scheduled
-# task `Clairvoyance Elevated Autostart` runs RunLevel=Highest, so the app and every orchestrator
-# tick it dispatches are ALREADY elevated. Callers wrap this dot-source in try/catch and fail open,
-# so the throw would be swallowed and Test-BackupQuiet would simply never run again -- a control
-# that silently becomes a permanent no-op, which is the exact failure the same review flagged
-# elsewhere. A warning instead would fire on 100% of normal runs and train everyone to ignore it.
-#
-# So the file MOVED here, to <TOOL_DIR>, which is ACL-hardened (verified:
-# SYSTEM / Administrators / <PC>\<YOU> only -- NO Authenticated Users ACE). The module
-# is no longer user-writable, so the finding is closed rather than warned about.
+# DO NOT "enforce" this by throwing for Administrator-role callers. That was measured and would
+# DISABLE THIS GATE ENTIRELY here: orchestrator ticks already run elevated, callers wrap the
+# dot-source in try/catch and fail open, so the throw is swallowed and Test-BackupQuiet simply
+# never runs again -- a control that silently becomes a permanent no-op. A warning instead fires on
+# 100% of normal runs and trains everyone to ignore it.
 #
 # It also buys a property worth keeping: the module and the lease it reads now SHARE FATE. Any
 # identity that cannot read this file cannot read the lease either, so there is no configuration
