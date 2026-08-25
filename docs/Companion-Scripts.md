@@ -597,7 +597,7 @@ function Get-ClairvoyanceVersion {
   return @{ version="unknown"; source=("unresolved:"+$exe) }   # never abort a backup over this (F14 philosophy)
 }
 # backup-tool (engine) version -- SINGLE SOURCE OF TRUTH. Bump on release.
-$EngineVersion = "0.3.0"
+$EngineVersion = "0.4.0"
 # backupToolVersion resolution: prefer the installer-written .backup-install.json (the proper source,
 # also read by backup-preflight for idempotency/version cross-check); fall back to $EngineVersion so
 # an install WITHOUT the manifest (e.g. this one) still stamps a real version instead of "unknown".
@@ -683,6 +683,59 @@ $script:hcache = @{}; $script:doRehash = $false
 function Load-Cache(){ if(Test-Path -LiteralPath $cachePath){ try { $o=Get-Content -Raw -LiteralPath $cachePath|ConvertFrom-Json; foreach($p in $o.PSObject.Properties){ $script:hcache[$p.Name]=$p.Value } } catch {} } }
 function Save-Cache(){ ($script:hcache | ConvertTo-Json -Depth 3 -Compress) | Set-Content -LiteralPath $cachePath -Encoding UTF8 }
 function Hash-Cached($full,$key){ $fi=Get-Item -LiteralPath $full; $c=$script:hcache[$key]; if((-not $script:doRehash) -and $c -and [int64]$c.size -eq $fi.Length -and [int64]$c.mtime -eq $fi.LastWriteTimeUtc.Ticks){ return $c.sha }; $h=(Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash; $script:hcache[$key]=[pscustomobject]@{ size=$fi.Length; mtime=$fi.LastWriteTimeUtc.Ticks; sha=$h }; return $h }
+
+# ---- F20: secret-scan VERDICT store (incremental scan, 2026-08-23) -------------------------
+# WHY A SECOND STORE AND NOT .hashcache.json: the hash cache is saved by the FAILURE path too
+# (line ~1498, `catch { ... Save-Cache }`). A run that dies before Scan-Secrets -- e.g. at
+# Assert-Window "secrets", which sits immediately BEFORE the scan -- therefore persists fresh
+# hashes for files that were never scanned. Deriving "unchanged, so skip" from a hash-cache hit
+# would make those files invisible to the scanner FOREVER: a real credential, in plaintext main,
+# with no signal. So the verdict is keyed on the file's sha256 and written ONLY after the scan
+# phase completes. "Hashed" and "scanned" are different facts and must not share a record.
+#
+# The verdict stores the OUTCOME, not merely "clean". Binary/read-error files are identified BY
+# READING them; if a cache hit skipped the read we could no longer count them, and skipBin would
+# silently collapse from ~641 to ~5, breaking every Assert-ScanDelta comparison against history.
+# Re-emitting the recorded outcome keeps every ledger counter meaning what it meant before.
+#   o = c(lean) | b(inary) | f(lagged, staff-memory no-scrub) | r(ead error)
+$scanVerdictPath = Join-Path $mirror ".scan-verdicts.json"
+function Get-ScanEpoch(){
+  # Binds a verdict to the rule set that produced it. Change any input below and every stored
+  # verdict is stale, because it answers a question we are no longer asking.
+  #
+  # THE NO-SCRUB SET IS AN INPUT. The 'f' outcome (detected, deliberately not scrubbed) depends on
+  # which sources are category=staff-memory. Omit it and moving a source out of that category
+  # leaves its stored 'f' verdicts "valid": reuse re-emits flagged and passes the file through
+  # UNSCRUBBED while the current config says scrub it. Sorted, so source ordering cannot churn it.
+  #
+  # Separator is [char]0, NOT `u{0}: the `u{..} escape is PowerShell 6+ only and renders as seven
+  # LITERAL characters under 5.1, so the epoch would differ between hosts and force a spurious
+  # full rescan the first time this ran under a different PowerShell.
+  $ns = @($script:effectiveSources | Where-Object { $_.category -eq "staff-memory" } | ForEach-Object { [string]$_.name } | Sort-Object)
+  $src = (@($cfg.secretScanPatterns) -join ([string][char]0)) + ([string][char]0) + "maxKB=" + [int]$cfg.secretScanMaxFileKB + ([string][char]0) + "noscrub=" + ($ns -join ',')
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { $h = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($src)) } finally { $sha.Dispose() }
+  return (($h | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0,16)
+}
+function Load-ScanVerdicts(){
+  $empty = [pscustomobject]@{ epoch=$null; verdicts=@{} }
+  if(-not (Test-Path -LiteralPath $scanVerdictPath)){ return $empty }
+  try {
+    $o = Get-Content -Raw -LiteralPath $scanVerdictPath | ConvertFrom-Json
+    $v = @{}
+    if($o.verdicts){ foreach($p in $o.verdicts.PSObject.Properties){ $v[$p.Name] = $p.Value } }
+    return [pscustomobject]@{ epoch=$o.epoch; verdicts=$v }
+  } catch {
+    # A corrupt store must fail CLOSED: no epoch => nothing matches => full rescan this run.
+    Log "scan-verdicts" "WARN" ("verdict store unreadable, FULL rescan this run: " + $_.Exception.Message)
+    return $empty
+  }
+}
+
+function Save-ScanVerdicts($epoch,$verdicts){
+  $obj = [pscustomobject]@{ epoch=$epoch; savedAt=(Get-Date).ToUniversalTime().ToString("o"); verdicts=$verdicts }
+  ($obj | ConvertTo-Json -Depth 4 -Compress) | Set-Content -LiteralPath $scanVerdictPath -Encoding UTF8
+}
 
 # ---- F19: unhashable-file guard (hashguard 2026-08-14) ----
 # WHY THIS EXISTS: a single file whose path Win32 cannot open used to abort the ENTIRE nightly.
@@ -1280,26 +1333,98 @@ function Assert-ScanDelta($cur,$ledger){
 
 function Scan-Secrets($mainMan){ if(-not $cfg.secretScanPatterns){ return ,@($mainMan) }
   $maxB=([int]$cfg.secretScanMaxFileKB)*1024
-  $scrubbed=@(); $dropped=@(); $skipBig=0; $skipBin=0; $flagged=@(); $out=@()
+  # $out is a List, not @(): `+=` on an array reallocates the whole array per element, which at
+  # 24k entries measured 18.1s against 0.06s for List.Add -- 300x, all of it interpreter overhead.
+  $scrubbed=@(); $dropped=@(); $skipBig=0; $skipBin=0; $flagged=@(); $out=New-Object 'Collections.Generic.List[object]'
   # F18-C scan-counts ledger (2026-08-13). $scanned is counted EXPLICITLY, not derived as
   # total-skipBig-skipBin: three paths below (absent from mirror, read failure, null content)
   # also leave a file unexamined, and subtraction would silently book them as scanned -- the
   # exact over-reporting this ledger exists to catch.
   $scanned=0; $skipMissing=0; $skipRead=0
+  # ---- F20 incremental scan --------------------------------------------------------------
+  # Only files whose content changed are read; everything else re-emits its recorded outcome.
+  # Rationale and measurements: CHANGELOG. The three facts below are editing constraints.
+  #
+  # 1. REUSE RESTS ON THE HASH CACHE, NOT ON A HASH OF THE BYTES BEING SKIPPED.
+  #    The test is $prior.s -eq $e.sha256, and $e.sha256 arrives via Manifest-Source -> Try-Hash
+  #    -> Hash-Cached, which returns a STORED hash whenever size and LastWriteTimeUtc.Ticks match
+  #    -- without opening the file. So "content unchanged" is decided by size+mtime.
+  #    Before F20 the scanner read every file regardless, so a stale cached hash was inert; F20
+  #    promotes it into a read/skip decision. Anything that weakens Hash-Cached's key, or that
+  #    reuses a hash from a wider window, widens this scanner's blind spot by the same amount.
+  #
+  # 2. $scanned MEANS "HOLDS A VALID VERDICT UNDER THE CURRENT RULE SET", NOT "READ THIS RUN".
+  #    Assert-ScanDelta compares it against the ledger's history, so redefining it silently
+  #    invalidates every prior night's comparison. fresh/cached are reported separately for
+  #    exactly that reason; do not fold them into $scanned.
+  #
+  # 3. THE VERDICT STORE IS SEPARATE FROM .hashcache.json DELIBERATELY.
+  #    The hash cache is persisted by the FAILURE path (see the catch at the bottom of the run),
+  #    so a run that dies before Scan-Secrets -- e.g. at Assert-Window "secrets", immediately
+  #    before it -- records fresh hashes for files it never scanned. Deriving skips from a
+  #    hash-cache hit would make those files invisible to the scanner. "Hashed" and "scanned" are
+  #    different facts and must not share a record.
+  $vs = Load-ScanVerdicts
+  $curEpoch = Get-ScanEpoch
+  $epochOk = ($null -ne $vs.epoch -and $vs.epoch -eq $curEpoch)
+  if(-not $epochOk){ Log "scan-epoch" "WARN" ("rule set changed or no baseline (stored=$($vs.epoch) current=$curEpoch) -- FULL rescan this run; every stored verdict answered a question we are no longer asking") }
+  # doRehash (the 28-day integrity pass) also forces a full rescan: it is already the mechanism
+  # that refuses to let a cached fact live forever, and the scan needs exactly that bound too.
+  $auditRate = if($null -ne $cfg.secretScanAuditRate){ [double]$cfg.secretScanAuditRate } else { 0.01 }
+  # REUSE REQUIRES ITS CONTROL. The audit sample is the only thing that can falsify a stored
+  # verdict; with auditRate at 0 reuse becomes unfalsifiable and a wrong verdict passes silently.
+  # So a zero rate disables REUSE, not the audit -- fail slow, never fail quiet.
+  $auditDisabled = ($auditRate -le 0)
+  if($auditDisabled){ Log "scan-audit" "WARN" "secretScanAuditRate=$auditRate disables the only check on reuse, so reuse is DISABLED this run and every file is read" }
+  $forceFull = (-not $epochOk) -or $script:doRehash -or $auditDisabled
+  $fresh=0; $cachedN=0; $audited=0; $auditMismatch=@(); $newVerdicts=@{}
+  $rnd = New-Object Random
   # NO-SCRUB SET: source NAMES whose category is exempt from the destructive rewrite below.
   # Gated on CATEGORY, not names, so adding a sixth staff-memory source needs no edit here.
   $noScrub=@{}; foreach($ns in $script:effectiveSources){ if($ns.category -eq "staff-memory"){ $noScrub[[string]$ns.name]=$true } }
   foreach($e in $mainMan){
-    if($e.bytes -gt $maxB){ $skipBig++; $out+=$e; continue }
+    if($e.bytes -gt $maxB){ $skipBig++; $out.Add($e); continue }
+    $vkey="$($e.source)|$($e.rel)"
     $full=Join-Path (Join-Path $mirror $e.source) $e.rel
-    if(-not(Test-Path -LiteralPath $full)){ $skipMissing++; $out+=$e; continue }
-    $txt=$null; try { $txt=Get-Content -Raw -LiteralPath $full -ErrorAction Stop } catch { $skipRead++; $out+=$e; continue }
-    if($null -eq $txt){ $skipRead++; $out+=$e; continue }
-    if($txt -match "\0"){ $skipBin++; $out+=$e; continue }   # binary: cannot text-scrub
+    # ---- verdict reuse: identical CONTENT, identical rule set => outcome cannot have changed --
+    $prior = if($forceFull){ $null } else { $vs.verdicts[$vkey] }
+    $reuse = ($null -ne $prior -and [string]$prior.s -eq [string]$e.sha256)
+    # AUDIT SAMPLE (the control): a fraction of reusable files are re-read anyway and their fresh
+    # outcome compared to the stored one. Without this, a wrong verdict is unfalsifiable -- and a
+    # counter that records reuse without ever testing it is instrumentation, not a control.
+    $isAudit = ($reuse -and $auditRate -gt 0 -and $rnd.NextDouble() -lt $auditRate)
+    if($reuse -and -not $isAudit){
+      $cachedN++
+      switch([string]$prior.o){
+        'b' { $skipBin++ }
+        'r' { $skipRead++ }
+        'f' { $scanned++; $flagged+="$($e.source)\$($e.rel)" }
+        default { $scanned++ }
+      }
+      $newVerdicts[$vkey]=$prior
+      $out.Add($e); continue
+    }
+    # On an audited file, $auditPriorO holds the outcome the store CLAIMED for this exact sha.
+    # Any terminal below that disagrees with it is a verdict that was wrong, which is the one
+    # thing the reuse path cannot detect about itself.
+    $auditPriorO = if($isAudit){ [string]$prior.o } else { $null }
+    if(-not [IO.File]::Exists($full)){ $skipMissing++; $out.Add($e); continue }
+    # Counted HERE, at the open, not after the binary/read-error branches: `fresh` is the cost
+    # metric -- files this run actually opened -- and a binary file costs a full read to discover
+    # it is binary. Counting it later made fresh and cached tally different populations (fresh=4
+    # vs cached=5 over the same five files), which would have made the ledger unreadable.
+    # Invariant: fresh + cached + skipBig + skipMissing == total.
+    $fresh++; if($isAudit){ $audited++ }
+    $txt=$null; try { $txt=[IO.File]::ReadAllText($full) } catch { $skipRead++; if($auditPriorO -and $auditPriorO -ne 'r'){ $auditMismatch+="$($e.source)\$($e.rel) (stored=$auditPriorO fresh=r)" }; $newVerdicts[$vkey]=@{s=$e.sha256;o='r'}; $out.Add($e); continue }
+    if($null -eq $txt){ $skipRead++; if($auditPriorO -and $auditPriorO -ne 'r'){ $auditMismatch+="$($e.source)\$($e.rel) (stored=$auditPriorO fresh=r)" }; $newVerdicts[$vkey]=@{s=$e.sha256;o='r'}; $out.Add($e); continue }
+    if($txt.IndexOf([char]0) -ge 0){ $skipBin++; if($auditPriorO -and $auditPriorO -ne 'b'){ $auditMismatch+="$($e.source)\$($e.rel) (stored=$auditPriorO fresh=b)" }; $newVerdicts[$vkey]=@{s=$e.sha256;o='b'}; $out.Add($e); continue }   # binary: cannot text-scrub
     $scanned++   # examined; a flagged (no-scrub) file below still counts as scanned
     $found=$false; $new=$txt
     foreach($pat in $cfg.secretScanPatterns){ if($new -match $pat){ $found=$true; $new=[regex]::Replace($new,$pat,'***REDACTED-BY-BACKUP-SCRUB***') } }
-    if(-not $found){ $out+=$e; continue }
+    if(-not $found){ if($auditPriorO -and $auditPriorO -ne 'c'){ $auditMismatch+="$($e.source)\$($e.rel) (stored=$auditPriorO fresh=c)" }; $newVerdicts[$vkey]=@{s=$e.sha256;o='c'}; $out.Add($e); continue }
+    # A secret WAS found. If the store claimed 'c' for this exact content hash, the stored verdict
+    # was wrong -- this is the leak the audit sample exists to catch, and it is reported as FAIL.
+    if($auditPriorO -eq 'c'){ $auditMismatch+="$($e.source)\$($e.rel) (stored=c fresh=SECRET-FOUND)" }
     # STAFF-MEMORY NO-SCRUB (the maintainer 2026-08-02). Detect and WARN, but never rewrite. These files
     # exist to RECORD failure modes, and a credential-shaped failure mode must be written in
     # credential-shaped text -- scrubbing destroys the exact string that made the note worth
@@ -1308,14 +1433,37 @@ function Scan-Secrets($mainMan){ if(-not $cfg.secretScanPatterns){ return ,@($ma
     # credential reach plaintext _main.7z with no signal at all -- trading a lossy archive for
     # a silent leak, which is strictly worse. The entry is passed through UNMODIFIED, so its
     # bytes/sha256 still describe the archived file and deep-verify stays consistent.
-    if($noScrub.ContainsKey([string]$e.source)){ $flagged+="$($e.source)\$($e.rel)"; $out+=$e; continue }
+    if($noScrub.ContainsKey([string]$e.source)){ $flagged+="$($e.source)\$($e.rel)"; $newVerdicts[$vkey]=@{s=$e.sha256;o='f'}; $out.Add($e); continue }
     try {
+      # ENCODING: detection reads via [IO.File]::ReadAllText (BOM, else UTF8) because it is ~5x
+      # cheaper and the patterns are pure ASCII, so detection is decoder-independent. The WRITE
+      # is not: for a BOM-less file in the system codepage the two decoders disagree, and this is
+      # the only destructive path in the function. So the bytes we rewrite are re-read through
+      # Get-Content -Raw -- the exact decoder the pre-F20 code used -- leaving scrub output
+      # byte-identical to today's. Costs one extra read on the ~17 files a night that scrub.
+      # (powershell-encoding-roundtrip)
+      $orig = Get-Content -Raw -LiteralPath $full -ErrorAction Stop
+      $new = $orig
+      foreach($pat in $cfg.secretScanPatterns){ if($new -match $pat){ $new=[regex]::Replace($new,$pat,'***REDACTED-BY-BACKUP-SCRUB***') } }
+      # TWO DECODERS, AND THE SECOND ONE DECIDES THE BYTES. Detection ran on ReadAllText; the
+      # replace above runs on Get-Content -Raw. If a pattern ever matches under one and not the
+      # other, this branch would write the file back UNCHANGED-but-re-encoded and record it clean
+      # -- booking a scrub that removed nothing while the secret is still in the archive. Refuse
+      # to treat that as a scrub. -ceq: case-SENSITIVE, since a case-only delta is still a delta.
+      if($new -ceq $orig){ throw "scrub removed nothing: detection matched under ReadAllText but the replace pass matched nothing under Get-Content -Raw (decoder disagreement)" }
       Set-Content -LiteralPath $full -Value $new -Encoding UTF8 -NoNewline -ErrorAction Stop
       $e.bytes=(Get-Item -LiteralPath $full).Length
       $e.sha256=(Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash   # keep manifest == archived bytes (deep-verify stays consistent)
-      $scrubbed+="$($e.source)\$($e.rel)"; $out+=$e
+      # Verdict is recorded against the POST-scrub sha, whose content is now genuinely clean.
+      # (Next run robocopy restores the unscrubbed original, its sha differs, and it is rescanned
+      # and rescrubbed -- which is why `scrubbed` stays non-zero night after night, as today.)
+      $newVerdicts[$vkey]=@{s=$e.sha256;o='c'}
+      $scrubbed+="$($e.source)\$($e.rel)"; $out.Add($e)
     } catch {
       try { Remove-Item -LiteralPath $full -Force -ErrorAction Stop } catch {}   # cannot scrub -> exclude so it can't leak (file NOT added to $out)
+      # NO verdict recorded: the file is not in the archive, and a stored verdict would let a
+      # later run that CAN read it skip the scan on a sha it never actually examined.
+      $newVerdicts.Remove($vkey)
       $dropped+="$($e.source)\$($e.rel)"
     }
   }
@@ -1324,6 +1472,28 @@ function Scan-Secrets($mainMan){ if(-not $cfg.secretScanPatterns){ return ,@($ma
   if($skipBig -or $skipBin){ Log "secret-scan" "WARN" ("not scanned (so NOT scrubbed): $skipBig oversized (>$($cfg.secretScanMaxFileKB)KB), $skipBin binary") }
   if($flagged.Count){ Log "secret-flag" "WARN" ("secret-shaped text DETECTED but deliberately NOT scrubbed (category=staff-memory; archived verbatim, live source untouched) -- REVIEW each: "+((@($flagged)|Select-Object -First 5) -join "; ")+$(if($flagged.Count -gt 5){" (+$($flagged.Count-5) more)"}else{""})) }
   if(-not $scrubbed.Count -and -not $dropped.Count -and -not $flagged.Count){ Log "secret-scan" "PASS" ("no novel secrets in main set"+$(if($skipBig -or $skipBin){" ($skipBig oversized/$skipBin binary not scanned)"}else{""})) }
+  # ---- F20: report the split, and ASSERT the control ---------------------------------------
+  # A pass must leave a trace: a run that silently reused every verdict is indistinguishable from
+  # one where the scanner never executed, unless the split is written down every time.
+  Log "scan-mode" "PASS" ("fresh=$fresh cached=$cachedN audited=$audited of total=$(@($mainMan).Count) | epoch=$curEpoch reuse=$(if($forceFull){'DISABLED'}else{'on'})$(if($script:doRehash){' (28-day integrity pass: FULL rescan)'}elseif(-not $epochOk){' (rule set changed: FULL rescan)'}else{''}) | auditRate=$auditRate")
+  # THE CONTROL. A mismatch means a stored verdict did not describe the bytes it was keyed to --
+  # i.e. the reuse path skipped a file it should have read. Fail the run AND drop the epoch, so
+  # the next run cannot reuse anything from a store that has demonstrably lied once.
+  if($auditMismatch.Count){
+    $result.ok=$false
+    Log "scan-audit" "FAIL" ("VERDICT STORE WRONG on $($auditMismatch.Count) of $audited audited file(s) -- reuse is unsafe and the store is being invalidated; next run scans everything: "+((@($auditMismatch)|Select-Object -First 5) -join '; ')+$(if($auditMismatch.Count -gt 5){" (+$($auditMismatch.Count-5) more)"}else{""}))
+    $curEpoch = $null
+  } elseif($audited -gt 0){
+    Log "scan-audit" "PASS" "$audited reused verdict(s) re-read and confirmed against fresh scan"
+  } elseif($cachedN -gt 0){
+    # Reuse happened but nothing tested it. Not a failure, but it must not read as a clean bill.
+    Log "scan-audit" "WARN" "$cachedN verdict(s) reused with ZERO audited this run (auditRate=$auditRate) -- reuse was not tested"
+  }
+  # Persist LAST, and only here: reaching this point means the scan phase completed. Persisting
+  # earlier (or from the failure path, as the hash cache does) would record files as scanned by a
+  # run that died before scanning them.
+  try { Save-ScanVerdicts $curEpoch $newVerdicts }
+  catch { Log "scan-verdicts" "WARN" ("could not persist verdict store, next run rescans everything: " + $_.Exception.Message) }
   # ---- F18-C step 1: append the scan-counts ledger line ----------------------------------
   # WHY: `scanned` falling while `total` holds is the signal that coverage silently shrank.
   # `mode` is MANDATORY and recorded, so a DryRun line can never be read as a live one
@@ -1360,6 +1530,16 @@ function Scan-Secrets($mainMan){ if(-not $cfg.secretScanPatterns){ return ,@($ma
       dropped     = @($dropped).Count
       maxFileKB   = [int]$cfg.secretScanMaxFileKB
       patterns    = @($cfg.secretScanPatterns).Count
+      # F20. `scanned` above still means "holds a valid verdict under the current rule set", which
+      # is what Assert-ScanDelta's history comparisons are about -- so those tolerances keep
+      # working unchanged. These say HOW that coverage was obtained. freshScanned collapsing to 0
+      # while scanned holds is the signal that the scanner stopped executing entirely.
+      freshScanned  = $fresh
+      cachedVerdict = $cachedN
+      audited       = $audited
+      auditMismatch = @($auditMismatch).Count
+      scanEpoch     = [string]$curEpoch
+      fullRescan    = [bool]$forceFull
     }
     # ConvertTo-Json, never -f: the format operator silently emits literal {n} on this codebase.
     # AppendAllText with a BOM-less UTF8 encoder -- Add-Content -Encoding UTF8 injects a BOM,
@@ -1379,7 +1559,10 @@ function Scan-Secrets($mainMan){ if(-not $cfg.secretScanPatterns){ return ,@($ma
     try { Assert-ScanDelta $rec $ledger }
     catch { Log "scan-delta" "WARN" ("delta assert failed to evaluate (counts still recorded): " + $_.Exception.Message) }
   }
-  return ,@($out)
+  # $out is a List now: ToArray() first, THEN comma-guard. Assign-then-return rather than
+  # ,@($out) so there is no question of the wrap re-nesting. (powershell-comma-guard-access-rule)
+  $outArr = $out.ToArray()
+  return ,$outArr
 }
 
 function Upload-Verify($srcFile,$destDir){
@@ -1569,6 +1752,10 @@ try {
   Load-Cache
   $state = if(Test-Path -LiteralPath $statePath){ Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json } else { [pscustomobject]@{ lastSuccess=$null; lastWeekly=$null; lastMonthly=$null; lastAnnual=$null; lastFullRehash=$null } }
   if(-not ($state.PSObject.Properties.Name -contains 'lastFullRehash')){ $state | Add-Member NoteProperty lastFullRehash $null -Force }
+  # THIS 28 IS ALSO A SECURITY PARAMETER, NOT ONLY AN INTEGRITY ONE.
+  # Scan-Secrets (F20) treats doRehash as its full-rescan trigger, so this interval is the hard
+  # ceiling on how long a file can go unread by the secret scanner. Lengthening it for hashing-cost
+  # reasons lengthens the scanner's blind window by the same amount, silently.
   $script:doRehash = [bool]$ForceRehash -or (-not $state.lastFullRehash) -or (([datetime]$state.lastFullRehash) -lt $now.AddDays(-28))
   if($script:doRehash){ Log "rehash" "INFO" "FULL re-hash this run (monthly integrity pass)" }
   if(-not $SkipSecrets){ Get-Passphrase | Out-Null }   # F3: fetch + clear env BEFORE any child process spawns

@@ -7,6 +7,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-24
+
+### Added
+
+- **Incremental secret scan.** The nightly secret-leak scan previously read **every** file in the staging mirror. It now reads only files whose *content* changed since a recorded verdict, and re-emits the stored outcome for the rest. Measured **~1.7x–2.1x** faster in steady state over repeated runs against real mirror data. Three properties are load-bearing and are documented as editing constraints at the top of the scan in `scripts/backup.ps1`:
+  - **Reuse rests on the hash cache, not on a hash of the bytes being skipped.** "Content unchanged" is decided by the size + mtime key that `Hash-Cached` already uses. Before this change a stale cached hash was inert, because the scanner read every file regardless; it is now promoted into a read/skip decision. Anything that weakens that key widens the scanner's blind spot by the same amount.
+  - **`scanned` still means "holds a valid verdict under the current rule set", not "read this run".** The coverage-delta assert compares it against the ledger's history, so redefining it silently invalidates every prior night's comparison. Fresh and cached counts are reported *separately* for exactly that reason.
+  - **The verdict store is separate from the hash cache, deliberately.** The hash cache is persisted by the failure path, so a run that dies before the scan records fresh hashes for files it never scanned. Deriving skips from a hash-cache hit would make those files invisible to the scanner. "Hashed" and "scanned" are different facts and do not share a record.
+- **Bounded staleness, two ways.** Any change to `secretScanPatterns` or `secretScanMaxFileKB` invalidates every stored verdict (the rule set is folded into a scan epoch), and the existing 28-day forced full re-hash also forces a full rescan — so no verdict can outlive it. **`doRehash`'s interval is therefore now a security parameter**, and a comment at its assignment says so: lengthening it for integrity-cost reasons lengthens the scanner's blind window by the same amount.
+- **Reuse requires its control.** A random audit sample re-reads a fraction of skipped files and fails the run if a stored verdict is wrong. `secretScanAuditRate` set to **0 disables *reuse*, not the audit** — with no audit there is nothing that can falsify a stored verdict, so reuse becomes unfalsifiable and the run reads everything instead. Fail slow, never fail quiet.
+- **Real-time antivirus timing notice** — Build Runbook **§0b**, with a pointer from the README's risks list. Documents the measured cold-vs-warm on-access scan cost (**~74.8 ms vs ~0.32 ms, ~237x**), the fact that **definition updates flush the verdict cache** so the cost cannot be scheduled around, and how to tell from your own logs whether a slow run is paying it. Mitigations — including an AV exclusion on the staging directory — are named as choices an operator may make and are **deliberately not implemented here**: turning off real-time protection for a directory holding a full plaintext copy of your data is a decision to reach against your own threat model, not to inherit from a backup tool.
+
 ### Fixed
 
 - **`tests/Test-PreflightScriptInventory.ps1` can no longer report green without its discrimination control.** The control — which proves the *previous* probe wrongly passes the fixture the current one rejects — was gated behind an optional parameter, so the default invocation printed `11 passed, 0 failed` with the only test that proves anything silently skipped. That is the same defect the suite exists to catch, reproduced inside the suite: an instrument reporting fine while the thing it measures is absent. The old probe is now derived from git (`v0.2.0`, addressed by tag rather than commit SHA, because the 2026-08-22 history rewrite invalidated every prior SHA), and **failure to obtain it fails the suite instead of shrinking it**.
@@ -95,7 +107,8 @@ Clairvoyance Versioning Backup System.
 ### Removed
 - `docs/Forum-Description.md` — its content was folded into the README (the standalone forum-post version is retained outside this repo).
 
-[Unreleased]: https://github.com/bubomortis/clairvoyanceai-backup-system/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/bubomortis/clairvoyanceai-backup-system/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/bubomortis/clairvoyanceai-backup-system/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/bubomortis/clairvoyanceai-backup-system/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/bubomortis/clairvoyanceai-backup-system/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bubomortis/clairvoyanceai-backup-system/releases/tag/v0.1.0

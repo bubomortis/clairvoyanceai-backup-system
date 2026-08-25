@@ -37,6 +37,57 @@ The companion scripts (`backup.ps1`/`restore.ps1`) already implement the followi
 
 Two hardening items **do** require a decision and appear as steps: the **folder lockdown** (Step 12) and the **optional SMB-signing** election (interview Q12 → Step 12).
 
+## 0b. Real-time antivirus and scan-phase timing (read this if your runs are slow)
+
+The secret-leak scan (F7) and the manifest phase both open every file in the staging mirror. On
+Windows with **Defender real-time protection active**, each *cold* open is charged an on-access
+scan; a *warm* open — one whose verdict is still cached — is not.
+
+**Measured on a reference host over ~6,000 files:**
+
+| open | cost per file |
+|---|---|
+| cold (no cached verdict) | **~74.8 ms** |
+| warm (cached verdict) | **~0.32 ms** |
+| ratio | **~237x** |
+
+At tens of thousands of files this is the difference between a scan phase measured in minutes and
+one measured in tens of minutes. It is the single largest variable in nightly runtime on a
+protected host.
+
+**You cannot schedule around it.** An antivirus **definition update invalidates the verdict cache**,
+so the next run pays cold-open cost for the entire mirror regardless of how recently the previous
+run touched the same files. Definition updates are not reliably schedulable, so a run that has been
+comfortable for weeks can take several times longer with no change on your side.
+
+### Are my runs paying it?
+
+1. Compare the scan-phase duration across nights in your backup log — look at the gap between the
+   `secrets-split` and `secret-scrub` stages. A phase that varies by a large multiple night to night,
+   with no corresponding change in file count, is the signature.
+2. Cross-reference the timing of a slow night against **Microsoft-Windows-Windows Defender/Operational
+   event ID 2000** (signature version updated). A definition update shortly before a slow run is the
+   explanation.
+3. `secret-scan-counts.jsonl` records `scanned` and the skip counters per run. If coverage is steady
+   while duration is not, the work did not grow — the per-file cost did.
+
+**What this release does about it:** the incremental secret scan (see the changelog for this version)
+reads only files whose content changed since a recorded verdict, so a steady-state run opens a small
+fraction of the mirror. That reduces *exposure* to the cold-open cost; it does not remove it, and the
+monthly forced full re-hash and any rule-set change still read everything.
+
+### Mitigations are yours to choose, and are deliberately not shipped
+
+An **antivirus exclusion on the staging directory** removes the cost entirely and is the obvious
+lever. **This project does not implement one, and that is intentional.** Turning off real-time
+protection for a directory is a risk decision about your own machine, and it should be reached
+deliberately against your own threat model rather than inherited from a backup tool because it
+happened to be in the box. The staging mirror is a full plaintext copy of your data, which is
+precisely the kind of directory an operator may not wish to leave unscanned.
+
+If you choose to do it, own the whole decision: scope it to the narrowest possible path, and make it
+temporary rather than permanent if you can. Nothing here will do it for you or check that you did.
+
 ## 1. Prerequisites (Windows 10/11)
 - PowerShell 5.1+ · **7-Zip** installed (note its `7z.exe` path) · `robocopy` (built-in).
 - A backup **destination** reachable as a path (local drive or `\\server\share`).
