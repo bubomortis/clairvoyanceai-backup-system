@@ -120,6 +120,22 @@ scan path rather than the shipped function. It must never be used for a per-nigh
 
 ---
 
+## Reparse-point walk — the version-scoped safety property
+
+*Constraint that remains in `backup.ps1`: do not depth-bound the walk.*
+
+An unbounded recursive walk over a tree containing junctions is only safe because
+**`Get-ChildItem -Recurse` does not descend into reparse points.** That was verified with a positive
+control on **PowerShell 5.1.22621.6133**.
+
+The version pin matters: if that behaviour ever changes across a PowerShell version, this claim is
+what needs re-testing, and someone reading only "verified with a positive control" would not know
+the verification was version-scoped. An earlier depth cap was removed after measuring its cost at
++2.3s per nightly against a 60-minute ceiling — 0.07% of the margin — while it missed a live
+junction at depth 6 on a mirrored path.
+
+---
+
 ## Backup log note — why the monitor could not own the share mirror
 
 *Constraint that remains in `backup.ps1`: one writer, one direction, every run.*
