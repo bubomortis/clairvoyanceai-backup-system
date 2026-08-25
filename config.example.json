@@ -29,6 +29,9 @@
   "secretScanMaxFileKB": 1024,
   "_comment_secretScanMaxFileKB": "Files larger than this are NOT scanned and therefore NOT scrubbed; the run still reports ok=true. This is a deliberate cost cap, not a guarantee — 'no secrets found' and 'nothing was examined' produce the same green. The scan-counts ledger below exists precisely so that the size of this blind spot is visible instead of implied.",
 
+  "secretScanAuditRate": 0.01,
+  "_comment_secretScanAuditRate": "Fraction of files skipped by the incremental scan that are re-read each run to check their stored verdict is still right. Setting this to 0 disables REUSE, not the audit: with no audit, nothing can falsify a stored verdict, so reuse becomes unfalsifiable and the run reads every file instead. 0 therefore means MORE work, not less. OMIT THIS KEY to accept the built-in default, which is the value shown here.",
+
   "secretScanDelta": {
     "maxCoverageDropPP": 1.5,
     "maxCoverageBelowAnchorPP": 3.0,

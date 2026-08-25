@@ -31,6 +31,10 @@ $ErrorActionPreference = 'Stop'
 
 # Resolved HERE, not as a param default: $PSScriptRoot is not yet populated during parameter
 # binding, so a default built from it binds as an empty string and Split-Path throws.
+# Only the clone layout is probed here, deliberately. Unlike the three tests beside it, this one
+# is repo-native: it is not in stage-package.ps1's file map and is never copied into an installed
+# tool directory, so ..\scripts is the only place its subject can be. Do not "make it consistent"
+# by adding a beside-me probe or by staging it.
 if (-not $Preflight) { $Preflight = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\backup-preflight.ps1' }
 if (-not (Test-Path -LiteralPath $Preflight)) { throw "preflight not found: $Preflight" }
 $pass = 0; $fail = 0
