@@ -2700,7 +2700,12 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-. '<TOOL_DIR>\backup-window.ps1'
+# Resolve the sibling module relative to this script. DO NOT hardcode an absolute path here:
+# packaging rewrites absolute paths into angle-bracketed placeholders, and unlike the parameter
+# defaults above there is NO WAY FOR A CALLER TO OVERRIDE A DOT-SOURCE -- so a hardcoded path
+# makes the published script unrunnable for every adopter however they invoke it, which is what
+# it did from v0.3.0 onward. backup-window.ps1 sits beside this file in both layouts.
+. (Join-Path $PSScriptRoot 'backup-window.ps1')
 
 $h   = Get-BackupHealth -ResultPath $ResultPath -MaxAgeHours $MaxAgeHours
 $now = Get-Date

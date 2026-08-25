@@ -2,7 +2,15 @@
 # Production last-run.json, the real note, and the real verdict log are NEVER
 # touched -- every path is redirected by parameter.
 $ErrorActionPreference = 'Stop'
-$script = '<TOOL_DIR>\Invoke-BackupHealthCheck.ps1'
+# Locate the subject relative to this test, so one source runs both from the live tool directory
+# (subject alongside) and from a repo clone (tests\ beside scripts\). DO NOT hardcode an absolute
+# path here: packaging rewrites absolute paths into angle-bracketed placeholders, and those
+# characters are illegal in a Windows path -- which left this test unable to run from a clone for
+# every adopter from v0.3.0 onward while still passing at the maintainer's seat.
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$script = Join-Path $here 'Invoke-BackupHealthCheck.ps1'
+if(-not (Test-Path -LiteralPath $script)){ $script = Join-Path $here '..\scripts\Invoke-BackupHealthCheck.ps1' }
+if(-not (Test-Path -LiteralPath $script)){ throw "Invoke-BackupHealthCheck.ps1 not found beside this test or in ..\scripts" }
 $sb = Join-Path $env:TEMP ("bhc-alarm-" + [guid]::NewGuid().ToString('N').Substring(0,8))
 New-Item -ItemType Directory -Path $sb -Force | Out-Null
 $result  = Join-Path $sb 'last-run.json'

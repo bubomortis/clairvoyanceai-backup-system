@@ -17,6 +17,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **`docs/Design-History.md`** — derivations whose conclusions live in the code but whose workings do not: the pause-lease TTL sizing, the scan-coverage tolerance measurements, and why the log-note share mirror could not be owned by the monitor. Two figures are recorded as **withdrawn** rather than deleted, because both were re-quoted as fact after the reasoning behind them was superseded — which is the failure that document exists to prevent.
 - **Threat-model sections in `SECURITY.md`** — elevated binary resolution (why absolute paths, never `PATH`, and why hardening the tools directory is the wrong fix), and the recovery-document line-injection defence with its proof-of-concept.
 
+### Fixed
+
+- **The shipped test suite could not run from a clone, and had not been able to since 0.3.0.** Three of the four tests in `tests/` failed immediately for anyone who was not the maintainer — two with `Illegal characters in path`, one with `checker not found`. The cause was a hardcoded absolute path being rewritten at packaging time into an angle-bracketed placeholder (`<TOOL_DIR>\…`), and `<`/`>` are illegal in a Windows path. **The most consequential instance was not in the tests at all**: `scripts/Invoke-BackupHealthCheck.ps1` dot-sourced `backup-window.ps1` by absolute path, and unlike the parameter defaults around it, **a dot-source cannot be overridden by a caller** — so the published script was unrunnable however it was invoked, not merely under test.
+  - Subjects and sibling modules are now resolved **relative to the script**, which is correct in both layouts: the subject sits alongside in an installed tool directory, and in `..\scripts` from a clone. No absolute path remains for packaging to rewrite, so the installed and published copies of these files are now byte-identical.
+  - All four suites now run from a clone: **43 assertions, 0 failures** (8 + 6 + 12 + 17), with identical results from an installed copy.
+  - This was invisible from the maintainer's seat by construction — the substitution that breaks it only happens on the way *out*, so every test passed locally while the published artifact was broken. Verification that never runs from a consumer's layout is not verification.
+
 ## [0.4.0] - 2026-08-24
 
 ### Added

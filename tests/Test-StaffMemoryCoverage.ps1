@@ -21,7 +21,12 @@ $ErrorActionPreference = 'Stop'
 
 # $PSScriptRoot is not reliably populated in a param default block under 5.1; resolve here instead.
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-if (-not $Checker) { $Checker = Join-Path $here 'Invoke-StaffMemoryCoverageCheck.ps1' }
+if (-not $Checker) {
+  # Two layouts: the subject sits BESIDE this test in the live tool directory, and in ..\scripts
+  # from a repo clone. Probing only the first is why this test could not run from a clone.
+  $Checker = Join-Path $here 'Invoke-StaffMemoryCoverageCheck.ps1'
+  if (-not (Test-Path -LiteralPath $Checker)) { $Checker = Join-Path $here '..\scripts\Invoke-StaffMemoryCoverageCheck.ps1' }
+}
 if (-not (Test-Path -LiteralPath $Checker)) { throw "checker not found: $Checker" }
 $pass = 0; $fail = 0
 
