@@ -245,7 +245,7 @@ function Get-ClairvoyanceVersion {
   return @{ version="unknown"; source=("unresolved:"+$exe) }   # never abort a backup over this (F14 philosophy)
 }
 # backup-tool (engine) version -- SINGLE SOURCE OF TRUTH. Bump on release.
-$EngineVersion = "0.4.0"
+$EngineVersion = "0.4.1"
 # backupToolVersion resolution: prefer the installer-written .backup-install.json (the proper source,
 # also read by backup-preflight for idempotency/version cross-check); fall back to $EngineVersion so
 # an install WITHOUT the manifest (e.g. this one) still stamps a real version instead of "unknown".
