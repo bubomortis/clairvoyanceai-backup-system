@@ -812,7 +812,8 @@ function SevenZipPw([string]$pw,[string[]]$z){ $pw | & $seven @z; return $LASTEX
 # 60-minute ceiling -- 0.07% of the margin -- so the cost it was avoiding did not exist, and it
 # MISSED a live junction at depth 6 on a mirrored path that /XJD also dropped: the exact silent skip
 # this function exists to prevent. Get-ChildItem -Recurse does not descend into reparse points
-# (verified with a positive control), which is what makes an unbounded walk safe here.
+# (verified with a positive control; the version pin for that verification is in
+# docs/Design-History.md), which is what makes an unbounded walk safe here.
 function Report-Junctions($src){
   $found = New-Object System.Collections.Generic.List[string]
   $inc = Get-IncludeGlobs $src
