@@ -7,6 +7,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Changed
+
+- **Superseded reasoning moved out of the scripts and into documentation.** A comment earns its place in the source if a future editor would introduce a defect without it; everything else — why a change was undertaken, what was measured, what a previous version got wrong, and who found it — is release history. `scripts/backup.ps1` had reached 48.5% comments, with the constraints that actually prevent defects buried among paragraphs of postmortem. It is now 46.0%, and the published script surface overall is 34.2% (from 35.8%). **No functional change**: verified by comparing the code-token stream with comments and newlines dropped — 10,347 / 2,094 / 1,010 tokens identical in sequence and kind for `backup.ps1`, `restore.ps1` and `backup-window.ps1`.
+  - Where history was load-bearing in disguise — an *"an earlier version said X, which was FALSE"* passage existing to stop someone re-weakening a rule — the intent is preserved as a one-line prohibition and only the narrative moved.
+
+### Added
+
+- **`docs/Design-History.md`** — derivations whose conclusions live in the code but whose workings do not: the pause-lease TTL sizing, the scan-coverage tolerance measurements, and why the log-note share mirror could not be owned by the monitor. Two figures are recorded as **withdrawn** rather than deleted, because both were re-quoted as fact after the reasoning behind them was superseded — which is the failure that document exists to prevent.
+- **Threat-model sections in `SECURITY.md`** — elevated binary resolution (why absolute paths, never `PATH`, and why hardening the tools directory is the wrong fix), and the recovery-document line-injection defence with its proof-of-concept.
+
 ## [0.4.0] - 2026-08-24
 
 ### Added
